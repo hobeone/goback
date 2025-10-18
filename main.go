@@ -15,6 +15,7 @@ import (
 )
 
 var dryRun = flag.Bool("dry-run", false, "print actions without executing them")
+var configFile = flag.String("config", "config.yaml", "path to the configuration file")
 
 type Config struct {
 	Destination      string   `yaml:"destination"`
@@ -34,7 +35,7 @@ type Keep struct {
 func main() {
 	flag.Parse()
 
-	config, err := readConfig("config.yaml")
+	config, err := readConfig(*configFile)
 	if err != nil {
 		log.Fatalf("error reading config: %v", err)
 	}

@@ -85,3 +85,57 @@ func TestPurgeBackups(t *testing.T) {
         }
     }
 }
+
+func TestReadConfig(t *testing.T) {
+	// Setup
+	configFileContent := `
+destination: /tmp/backup
+snapshot_prefix: test
+source:
+  - /tmp/source1
+exclude:
+  - /tmp/source1/excluded
+keep:
+  daily: 1
+  weekly: 1
+  monthly: 1
+rsync_extra_flags: "--verbose"
+`
+	tmpFile, err := os.CreateTemp("", "config-*.yaml")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(configFileContent); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Execute
+	config, err := readConfig(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("readConfig failed: %v", err)
+	}
+
+	// Verify
+	if config.Destination != "/tmp/backup" {
+		t.Errorf("Expected destination '/tmp/backup', got '%s'", config.Destination)
+	}
+	if config.SnapshotPrefix != "test" {
+		t.Errorf("Expected snapshot_prefix 'test', got '%s'", config.SnapshotPrefix)
+	}
+	if len(config.Source) != 1 || config.Source[0] != "/tmp/source1" {
+		t.Errorf("Expected source ['/tmp/source1'], got '%v'", config.Source)
+	}
+    if config.Keep.Daily != 1 {
+        t.Errorf("Expected keep.daily 1, got %d", config.Keep.Daily)
+    }
+}
+
+func TestReadConfig_NotFound(t *testing.T) {
+    _, err := readConfig("non-existent-file.yaml")
+    if err == nil {
+        t.Errorf("Expected an error when reading a non-existent file, but got nil")
+    }
+}

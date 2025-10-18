@@ -1,16 +1,10 @@
-destination: /mnt/nas/hobe/homelab_backup/moria
+destination: /home/hobe/tmp/backups
 snapshot_prefix: moria
 source:
-  - /srv/docker
-  - /srv/state
-  - /srv/.git
-  - /srv/.gitignore
-  - /home/hobe/backup.sh
+  - /home/hobe/tmp/doom eternal
 exclude:
-  - /srv/docker/nginx/nginx-config/keys
-  - /srv/docker/nginx/nginx-config/etc/letsencrypt
+  - /home/hobe/Documents/HOA
 keep:
   daily: 7
   weekly: 4
   monthly: 4
-rsync_extra_flags: "--dry-run"
