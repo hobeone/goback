@@ -85,12 +85,35 @@ func runBackup(config *Config, dryRun bool) error {
 	if config.RsyncExtraFlags != "" {
 		args = append(args, strings.Split(config.RsyncExtraFlags, " ")...)
 	}
+
+	if dryRun {
+		hasDryRun := false
+		for _, arg := range args {
+			if arg == "--dry-run" || arg == "-n" {
+				hasDryRun = true
+				break
+			}
+		}
+		if !hasDryRun {
+			args = append(args, "--dry-run")
+		}
+	}
+
 	args = append(args, config.Source...)
 	args = append(args, unfinishedDir)
 
 	if dryRun {
-		log.Println("[Dry Run] Would remove and recreate:", unfinishedDir)
-		log.Printf("[Dry Run] Would run command: rsync %s", strings.Join(args, " "))
+		log.Println("[Dry Run] Not creating/removing any directories.")
+
+		cmd := exec.Command("rsync", args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		log.Printf("Running command: rsync %s", strings.Join(args, " "))
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("rsync command failed during dry run: %w", err)
+		}
+
 		log.Printf("[Dry Run] Would rename %s to %s", unfinishedDir, finalDest)
 		log.Println("Backup finished successfully (dry run)")
 		return nil
