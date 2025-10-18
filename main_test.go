@@ -40,7 +40,7 @@ func TestPurgeBackups(t *testing.T) {
 	}
 
 	// Execute
-	if err := purgeBackups(config); err != nil {
+	if err := purgeBackups(config, false); err != nil {
 		t.Fatalf("purgeBackups failed: %v", err)
 	}
 

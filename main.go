@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+var dryRun = flag.Bool("dry-run", false, "print actions without executing them")
 
 type Config struct {
 	Destination      string   `yaml:"destination"`
@@ -29,16 +32,18 @@ type Keep struct {
 }
 
 func main() {
+	flag.Parse()
+
 	config, err := readConfig("config.yaml")
 	if err != nil {
 		log.Fatalf("error reading config: %v", err)
 	}
 
-	if err := runBackup(config); err != nil {
+	if err := runBackup(config, *dryRun); err != nil {
 		log.Fatalf("backup failed: %v", err)
 	}
 
-	if err := purgeBackups(config); err != nil {
+	if err := purgeBackups(config, *dryRun); err != nil {
 		log.Fatalf("purging old backups failed: %v", err)
 	}
 }
@@ -58,40 +63,45 @@ func readConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-func runBackup(config *Config) error {
+func runBackup(config *Config, dryRun bool) error {
 	log.Printf("Snapshot: %v to %s", config.Source, config.Destination)
 
 	unfinishedDir := filepath.Join(config.Destination, ".unfinished")
-	if err := os.RemoveAll(unfinishedDir); err != nil {
-		return fmt.Errorf("failed to remove unfinished directory: %w", err)
-	}
-
-	if err := os.MkdirAll(unfinishedDir, 0755); err != nil {
-		return fmt.Errorf("failed to create unfinished directory: %w", err)
-	}
+	snapshotName := fmt.Sprintf("%s_%s", config.SnapshotPrefix, time.Now().Format("2006-01-02_15:04:05"))
+	finalDest := filepath.Join(config.Destination, snapshotName)
 
 	latestSnapshot, err := getLatestSnapshot(config.Destination)
 	if err != nil {
 		return fmt.Errorf("failed to get latest snapshot: %w", err)
 	}
 
-	snapshotName := fmt.Sprintf("%s_%s", config.SnapshotPrefix, time.Now().Format("2006-01-02_15:04:05"))
-
 	args := []string{"-a", "-v", "-h", "--delete", "--stats", "--inplace"}
 	if latestSnapshot != "" {
 		args = append(args, "--link-dest="+filepath.Join(config.Destination, latestSnapshot))
 	}
-
 	for _, ex := range config.Exclude {
 		args = append(args, "--exclude="+ex)
 	}
-
 	if config.RsyncExtraFlags != "" {
 		args = append(args, strings.Split(config.RsyncExtraFlags, " ")...)
 	}
-
 	args = append(args, config.Source...)
 	args = append(args, unfinishedDir)
+
+	if dryRun {
+		log.Println("[Dry Run] Would remove and recreate:", unfinishedDir)
+		log.Printf("[Dry Run] Would run command: rsync %s", strings.Join(args, " "))
+		log.Printf("[Dry Run] Would rename %s to %s", unfinishedDir, finalDest)
+		log.Println("Backup finished successfully (dry run)")
+		return nil
+	}
+
+	if err := os.RemoveAll(unfinishedDir); err != nil {
+		return fmt.Errorf("failed to remove unfinished directory: %w", err)
+	}
+	if err := os.MkdirAll(unfinishedDir, 0755); err != nil {
+		return fmt.Errorf("failed to create unfinished directory: %w", err)
+	}
 
 	cmd := exec.Command("rsync", args...)
 	logFile, err := os.Create(filepath.Join(unfinishedDir, "rsync.log"))
@@ -109,7 +119,6 @@ func runBackup(config *Config) error {
 		return fmt.Errorf("rsync command failed: %w", err)
 	}
 
-	finalDest := filepath.Join(config.Destination, snapshotName)
 	if err := os.Rename(unfinishedDir, finalDest); err != nil {
 		return fmt.Errorf("failed to rename unfinished directory: %w", err)
 	}
@@ -157,7 +166,7 @@ func ageInDays(fi os.FileInfo) int {
 	return int(time.Since(fi.ModTime()).Hours() / 24)
 }
 
-func purgeBackups(config *Config) error {
+func purgeBackups(config *Config, dryRun bool) error {
 	snapshots, err := getSnapshots(config.Destination)
 	if err != nil {
 		return err
@@ -174,11 +183,11 @@ func purgeBackups(config *Config) error {
 	for i := len(snapshots) - 2; i >= 0; i-- {
 		s := snapshots[i]
 		age := ageInDays(s)
-		
+
 		interval := 0
 		if age <= config.Keep.Daily {
 			interval = 0 // keep all
-		} else if age <= config.Keep.Daily + config.Keep.Weekly*7 {
+		} else if age <= config.Keep.Daily+config.Keep.Weekly*7 {
 			interval = 7
 		} else {
 			interval = 30
@@ -199,10 +208,14 @@ func purgeBackups(config *Config) error {
 
 	for _, s := range snapshots {
 		if !keep_map[s.Name()] {
-			log.Printf("Purging snapshot: %s", s.Name())
-			err := os.RemoveAll(filepath.Join(config.Destination, s.Name()))
-			if err != nil {
-				log.Printf("Failed to purge snapshot %s: %v", s.Name(), err)
+			if dryRun {
+				log.Printf("[Dry Run] Would purge snapshot: %s", s.Name())
+			} else {
+				log.Printf("Purging snapshot: %s", s.Name())
+				err := os.RemoveAll(filepath.Join(config.Destination, s.Name()))
+				if err != nil {
+					log.Printf("Failed to purge snapshot %s: %v", s.Name(), err)
+				}
 			}
 		}
 	}
