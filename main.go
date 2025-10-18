@@ -191,62 +191,75 @@ func ageInDays(fi os.FileInfo) int {
 }
 
 func purgeBackups(config *Config, dryRun bool) error {
-	snapshots, err := getSnapshots(config.Destination)
+	snapshots, err := getSnapshots(config.Destination) // getSnapshots sorts oldest to newest
 	if err != nil {
 		return err
 	}
-	log.Printf("Found %d snapshots to consider for purging.", len(snapshots))
+	// Reverse to sort newest to oldest
+	for i, j := 0, len(snapshots)-1; i < j; i, j = i+1, j-1 {
+		snapshots[i], snapshots[j] = snapshots[j], snapshots[i]
+	}
 
-	var to_keep []os.FileInfo
+	log.Printf("Found %d snapshots to consider for purging.", len(snapshots))
 	if len(snapshots) == 0 {
 		log.Println("No snapshots found to purge.")
 		return nil
 	}
 
-	to_keep = append(to_keep, snapshots[len(snapshots)-1])
-	log.Printf("Keeping newest snapshot: %s", snapshots[len(snapshots)-1].Name())
-	last_kept := snapshots[len(snapshots)-1]
+	to_keep := make(map[string]bool)
 
-	for i := len(snapshots) - 2; i >= 0; i-- {
+	// Daily backups
+	daily_kept_count := 0
+	for i := 0; i < len(snapshots) && daily_kept_count < config.Keep.Daily; i++ {
 		s := snapshots[i]
-		age := ageInDays(s)
-
-		interval := 0
-		reason := ""
-		if age <= config.Keep.Daily {
-			interval = 0 // keep all
-			reason = "daily"
-		} else if age <= config.Keep.Daily+config.Keep.Weekly*7 {
-			interval = 7
-			reason = "weekly"
-		} else {
-			interval = 30
-			reason = "monthly"
-		}
-
-		age_diff := ageInDays(s) - ageInDays(last_kept)
-
-		if interval == 0 {
-			log.Printf("Keeping snapshot %s (age %d days) because it's a %s backup.", s.Name(), age, reason)
-			to_keep = append(to_keep, s)
-			last_kept = s
-		} else if age_diff >= interval {
-			log.Printf("Keeping snapshot %s (age %d days) because it's a %s backup and the age difference is %d days (>= %d).", s.Name(), age, reason, age_diff, interval)
-			to_keep = append(to_keep, s)
-			last_kept = s
-		} else {
-			log.Printf("Marking snapshot %s (age %d days) for purging. Age difference to last kept is %d days (< %d).", s.Name(), age, age_diff, interval)
+		if !to_keep[s.Name()] {
+			log.Printf("Keeping snapshot %s as a daily backup.", s.Name())
+			to_keep[s.Name()] = true
+			daily_kept_count++
 		}
 	}
 
-	keep_map := make(map[string]bool)
-	for _, s := range to_keep {
-		keep_map[s.Name()] = true
+	// Weekly backups
+	weekly_kept_count := 0
+	weeks_seen := make(map[int]bool)
+	for _, s := range snapshots {
+		if weekly_kept_count >= config.Keep.Weekly {
+			break
+		}
+		year, week := s.ModTime().ISOWeek()
+		week_key := year*100 + week
+		if !weeks_seen[week_key] {
+			weeks_seen[week_key] = true
+			if !to_keep[s.Name()] {
+				log.Printf("Keeping snapshot %s as a weekly backup.", s.Name())
+				to_keep[s.Name()] = true
+				weekly_kept_count++
+			}
+		}
+	}
+
+	// Monthly backups
+	monthly_kept_count := 0
+	months_seen := make(map[int]bool)
+	for _, s := range snapshots {
+		if monthly_kept_count >= config.Keep.Monthly {
+			break
+		}
+		year, month, _ := s.ModTime().Date()
+		month_key := year*100 + int(month)
+		if !months_seen[month_key] {
+			months_seen[month_key] = true
+			if !to_keep[s.Name()] {
+				log.Printf("Keeping snapshot %s as a monthly backup.", s.Name())
+				to_keep[s.Name()] = true
+				monthly_kept_count++
+			}
+		}
 	}
 
 	log.Println("--- Purge Summary ---")
 	for _, s := range snapshots {
-		if !keep_map[s.Name()] {
+		if !to_keep[s.Name()] {
 			if dryRun {
 				log.Printf("[Dry Run] Would purge snapshot: %s", s.Name())
 			} else {

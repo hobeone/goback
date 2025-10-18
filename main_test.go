@@ -19,14 +19,22 @@ func TestPurgeBackups(t *testing.T) {
 	config := &Config{
 		Destination: tmpDir,
 		Keep: Keep{
-			Daily:   7,
-			Weekly:  4,
-			Monthly: 4,
+			Daily:   2,
+			Weekly:  2,
+			Monthly: 1,
 		},
 	}
 
-	ages := []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 15, 18, 22, 25, 29, 32, 40, 50, 70, 80, 130}
+	// Create snapshots with specific dates
+	// 2 daily, 2 weekly (from different weeks), 1 monthly, and some to be purged
 	now := time.Now()
+	ages := []int{
+		1, 2, // Daily
+		8, 9, // Week 2, 8 is newest
+		15, 16, // Week 3, 15 is newest
+		35, 36, // Month 2, 35 is newest
+		70, 71, // Month 3, 70 is newest
+	}
 	for _, age := range ages {
 		name := fmt.Sprintf("snapshot-%d", age)
 		path := filepath.Join(tmpDir, name)
@@ -46,18 +54,11 @@ func TestPurgeBackups(t *testing.T) {
 
 	// Verify
 	expected_to_keep := map[string]bool{
-		"snapshot-1":   true,
-		"snapshot-2":   true,
-		"snapshot-3":   true,
-		"snapshot-4":   true,
-		"snapshot-5":   true,
-		"snapshot-6":   true,
-		"snapshot-7":   true,
-		"snapshot-15":  true,
-		"snapshot-22":  true,
-		"snapshot-29":  true,
-		"snapshot-70":  true,
-		"snapshot-130": true,
+		"snapshot-1":  true, // daily
+		"snapshot-2":  true, // daily
+		"snapshot-8":  true, // weekly
+		"snapshot-15": true, // weekly
+		"snapshot-35": true, // monthly
 	}
 
 	files, err := os.ReadDir(tmpDir)
@@ -79,11 +80,11 @@ func TestPurgeBackups(t *testing.T) {
 			t.Errorf("Expected to find snapshot %s, but it was deleted", name)
 		}
 	}
-    for name := range found_map {
-        if !expected_to_keep[name] {
-            t.Errorf("Expected snapshot %s to be deleted, but it was kept", name)
-        }
-    }
+	for name := range found_map {
+		if !expected_to_keep[name] {
+			t.Errorf("Expected snapshot %s to be deleted, but it was kept", name)
+		}
+	}
 }
 
 func TestReadConfig(t *testing.T) {
