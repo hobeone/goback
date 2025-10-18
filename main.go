@@ -195,13 +195,16 @@ func purgeBackups(config *Config, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("Found %d snapshots to consider for purging.", len(snapshots))
 
 	var to_keep []os.FileInfo
 	if len(snapshots) == 0 {
+		log.Println("No snapshots found to purge.")
 		return nil
 	}
 
 	to_keep = append(to_keep, snapshots[len(snapshots)-1])
+	log.Printf("Keeping newest snapshot: %s", snapshots[len(snapshots)-1].Name())
 	last_kept := snapshots[len(snapshots)-1]
 
 	for i := len(snapshots) - 2; i >= 0; i-- {
@@ -209,19 +212,30 @@ func purgeBackups(config *Config, dryRun bool) error {
 		age := ageInDays(s)
 
 		interval := 0
+		reason := ""
 		if age <= config.Keep.Daily {
 			interval = 0 // keep all
+			reason = "daily"
 		} else if age <= config.Keep.Daily+config.Keep.Weekly*7 {
 			interval = 7
+			reason = "weekly"
 		} else {
 			interval = 30
+			reason = "monthly"
 		}
 
 		age_diff := ageInDays(s) - ageInDays(last_kept)
 
-		if interval == 0 || age_diff >= interval {
+		if interval == 0 {
+			log.Printf("Keeping snapshot %s (age %d days) because it's a %s backup.", s.Name(), age, reason)
 			to_keep = append(to_keep, s)
 			last_kept = s
+		} else if age_diff >= interval {
+			log.Printf("Keeping snapshot %s (age %d days) because it's a %s backup and the age difference is %d days (>= %d).", s.Name(), age, reason, age_diff, interval)
+			to_keep = append(to_keep, s)
+			last_kept = s
+		} else {
+			log.Printf("Marking snapshot %s (age %d days) for purging. Age difference to last kept is %d days (< %d).", s.Name(), age, age_diff, interval)
 		}
 	}
 
@@ -230,6 +244,7 @@ func purgeBackups(config *Config, dryRun bool) error {
 		keep_map[s.Name()] = true
 	}
 
+	log.Println("--- Purge Summary ---")
 	for _, s := range snapshots {
 		if !keep_map[s.Name()] {
 			if dryRun {
@@ -243,6 +258,7 @@ func purgeBackups(config *Config, dryRun bool) error {
 			}
 		}
 	}
+	log.Println("--- End Purge Summary ---")
 
 	return nil
 }
