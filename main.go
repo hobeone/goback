@@ -120,9 +120,11 @@ func runBackup(config *Config, dryRun bool) error {
 		return nil
 	}
 
+	log.Printf("Removing temporary directory if it exists: %s", unfinishedDir)
 	if err := os.RemoveAll(unfinishedDir); err != nil {
 		return fmt.Errorf("failed to remove unfinished directory: %w", err)
 	}
+	log.Printf("Creating temporary directory: %s", unfinishedDir)
 	if err := os.MkdirAll(unfinishedDir, 0755); err != nil {
 		return fmt.Errorf("failed to create unfinished directory: %w", err)
 	}
@@ -143,6 +145,7 @@ func runBackup(config *Config, dryRun bool) error {
 		return fmt.Errorf("rsync command failed: %w", err)
 	}
 
+	log.Printf("Renaming temporary directory %s to %s", unfinishedDir, finalDest)
 	if err := os.Rename(unfinishedDir, finalDest); err != nil {
 		return fmt.Errorf("failed to rename unfinished directory: %w", err)
 	}
