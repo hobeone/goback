@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,17 +37,19 @@ type Keep struct {
 func main() {
 	flag.Parse()
 
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC1123Z})
+
 	config, err := readConfig(*configFile)
 	if err != nil {
-		log.Fatalf("error reading config: %v", err)
+		log.Fatal().Err(err).Msg("error reading config")
 	}
 
 	if err := runBackup(config, *dryRun); err != nil {
-		log.Fatalf("backup failed: %v", err)
+		log.Fatal().Err(err).Msg("backup failed")
 	}
 
 	if err := purgeBackups(config, *dryRun); err != nil {
-		log.Fatalf("purging old backups failed: %v", err)
+		log.Fatal().Err(err).Msg("purging old backups failed")
 	}
 }
 
@@ -66,24 +69,24 @@ func readConfig(path string) (*Config, error) {
 }
 
 func runBackup(config *Config, dryRun bool) error {
-	log.Printf("Snapshot: %v to %s", config.Source, config.Destination)
+	log.Info().Strs("source", config.Source).Str("destination", config.Destination).Msg("Snapshot")
 
 	unfinishedDir := filepath.Join(config.Destination, ".unfinished")
 	snapshotName := fmt.Sprintf("%s_%s", config.SnapshotPrefix, time.Now().Format("2006-01-02_15:04:05"))
 	finalDest := filepath.Join(config.Destination, snapshotName)
 
 	if !dryRun {
-		log.Printf("Removing temporary directory if it exists: %s", unfinishedDir)
+		log.Info().Str("path", unfinishedDir).Msg("Removing temporary directory if it exists")
 		if err := os.RemoveAll(unfinishedDir); err != nil {
 			return fmt.Errorf("failed to remove unfinished directory: %w", err)
 		}
-		log.Printf("Creating temporary directory: %s", unfinishedDir)
+		log.Info().Str("path", unfinishedDir).Msg("Creating temporary directory")
 		if err := os.MkdirAll(unfinishedDir, 0755); err != nil {
 			return fmt.Errorf("failed to create unfinished directory: %w", err)
 		}
 	} else {
-		log.Printf("[Dry Run] Would remove temporary directory if it exists: %s", unfinishedDir)
-		log.Printf("[Dry Run] Would create temporary directory: %s", unfinishedDir)
+		log.Info().Str("path", unfinishedDir).Msg("[Dry Run] Would remove temporary directory if it exists")
+		log.Info().Str("path", unfinishedDir).Msg("[Dry Run] Would create temporary directory")
 	}
 
 	latestSnapshot, err := getLatestSnapshot(config.Destination)
@@ -119,7 +122,7 @@ func runBackup(config *Config, dryRun bool) error {
 	args = append(args, unfinishedDir)
 
 	cmd := exec.Command("rsync", args...)
-	log.Printf("Running command: rsync %s", strings.Join(args, " "))
+	log.Info().Str("command", fmt.Sprintf("rsync %s", strings.Join(args, " "))).Msg("Running command")
 
 	if dryRun {
 		cmd.Stdout = os.Stdout
@@ -143,15 +146,15 @@ func runBackup(config *Config, dryRun bool) error {
 	}
 
 	if !dryRun {
-		log.Printf("Renaming temporary directory %s to %s", unfinishedDir, finalDest)
+		log.Info().Str("from", unfinishedDir).Str("to", finalDest).Msg("Renaming temporary directory")
 		if err := os.Rename(unfinishedDir, finalDest); err != nil {
 			return fmt.Errorf("failed to rename unfinished directory: %w", err)
 		}
 	} else {
-		log.Printf("[Dry Run] Would rename %s to %s", unfinishedDir, finalDest)
+		log.Info().Str("from", unfinishedDir).Str("to", finalDest).Msg("[Dry Run] Would rename")
 	}
 
-	log.Println("Backup finished successfully")
+	log.Info().Msg("Backup finished successfully")
 	return nil
 }
 
@@ -200,9 +203,9 @@ func purgeBackups(config *Config, dryRun bool) error {
 		snapshots[i], snapshots[j] = snapshots[j], snapshots[i]
 	}
 
-	log.Printf("Found %d snapshots to consider for purging.", len(snapshots))
+	log.Info().Int("count", len(snapshots)).Msg("Found snapshots to consider for purging.")
 	if len(snapshots) == 0 {
-		log.Println("No snapshots found to purge.")
+		log.Info().Msg("No snapshots found to purge.")
 		return nil
 	}
 
@@ -213,7 +216,7 @@ func purgeBackups(config *Config, dryRun bool) error {
 	for i := 0; i < len(snapshots) && daily_kept_count < config.Keep.Daily; i++ {
 		s := snapshots[i]
 		if !to_keep[s.Name()] {
-			log.Printf("Keeping snapshot %s as a daily backup.", s.Name())
+			log.Info().Str("snapshot", s.Name()).Msg("Keeping snapshot as a daily backup.")
 			to_keep[s.Name()] = true
 			daily_kept_count++
 		}
@@ -231,7 +234,7 @@ func purgeBackups(config *Config, dryRun bool) error {
 		if !weeks_seen[week_key] {
 			weeks_seen[week_key] = true
 			if !to_keep[s.Name()] {
-				log.Printf("Keeping snapshot %s as a weekly backup.", s.Name())
+				log.Info().Str("snapshot", s.Name()).Msg("Keeping snapshot as a weekly backup.")
 				to_keep[s.Name()] = true
 				weekly_kept_count++
 			}
@@ -250,28 +253,28 @@ func purgeBackups(config *Config, dryRun bool) error {
 		if !months_seen[month_key] {
 			months_seen[month_key] = true
 			if !to_keep[s.Name()] {
-				log.Printf("Keeping snapshot %s as a monthly backup.", s.Name())
+				log.Info().Str("snapshot", s.Name()).Msg("Keeping snapshot as a monthly backup.")
 				to_keep[s.Name()] = true
 				monthly_kept_count++
 			}
 		}
 	}
 
-	log.Println("--- Purge Summary ---")
+	log.Info().Msg("--- Purge Summary ---")
 	for _, s := range snapshots {
 		if !to_keep[s.Name()] {
 			if dryRun {
-				log.Printf("[Dry Run] Would purge snapshot directory: %s", filepath.Join(config.Destination, s.Name()))
+				log.Info().Str("path", filepath.Join(config.Destination, s.Name())).Msg("[Dry Run] Would purge snapshot directory")
 			} else {
-				log.Printf("Purging snapshot: %s", s.Name())
+				log.Info().Str("snapshot", s.Name()).Msg("Purging snapshot")
 				err := os.RemoveAll(filepath.Join(config.Destination, s.Name()))
 				if err != nil {
-					log.Printf("Failed to purge snapshot %s: %v", s.Name(), err)
+					log.Error().Err(err).Str("snapshot", s.Name()).Msg("Failed to purge snapshot")
 				}
 			}
 		}
 	}
-	log.Println("--- End Purge Summary ---")
+	log.Info().Msg("--- End Purge Summary ---")
 
 	return nil
 }
