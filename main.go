@@ -71,6 +71,20 @@ func runBackup(config *Config, dryRun bool) error {
 	snapshotName := fmt.Sprintf("%s_%s", config.SnapshotPrefix, time.Now().Format("2006-01-02_15:04:05"))
 	finalDest := filepath.Join(config.Destination, snapshotName)
 
+	if !dryRun {
+		log.Printf("Removing temporary directory if it exists: %s", unfinishedDir)
+		if err := os.RemoveAll(unfinishedDir); err != nil {
+			return fmt.Errorf("failed to remove unfinished directory: %w", err)
+		}
+		log.Printf("Creating temporary directory: %s", unfinishedDir)
+		if err := os.MkdirAll(unfinishedDir, 0755); err != nil {
+			return fmt.Errorf("failed to create unfinished directory: %w", err)
+		}
+	} else {
+		log.Printf("[Dry Run] Would remove temporary directory if it exists: %s", unfinishedDir)
+		log.Printf("[Dry Run] Would create temporary directory: %s", unfinishedDir)
+	}
+
 	latestSnapshot, err := getLatestSnapshot(config.Destination)
 	if err != nil {
 		return fmt.Errorf("failed to get latest snapshot: %w", err)
@@ -103,51 +117,33 @@ func runBackup(config *Config, dryRun bool) error {
 	args = append(args, config.Source...)
 	args = append(args, unfinishedDir)
 
-	if dryRun {
-		log.Println("[Dry Run] Not creating/removing any directories.")
+	cmd := exec.Command("rsync", args...)
+	log.Printf("Running command: rsync %s", strings.Join(args, " "))
 
-		cmd := exec.Command("rsync", args...)
+	if dryRun {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-
-		log.Printf("Running command: rsync %s", strings.Join(args, " "))
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("rsync command failed during dry run: %w", err)
+	} else {
+		logFile, err := os.Create(filepath.Join(unfinishedDir, "rsync.log"))
+		if err != nil {
+			return fmt.Errorf("failed to create rsync log file: %w", err)
 		}
-
-		log.Printf("[Dry Run] Would rename %s to %s", unfinishedDir, finalDest)
-		log.Println("Backup finished successfully (dry run)")
-		return nil
+		defer logFile.Close()
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
 	}
-
-	log.Printf("Removing temporary directory if it exists: %s", unfinishedDir)
-	if err := os.RemoveAll(unfinishedDir); err != nil {
-		return fmt.Errorf("failed to remove unfinished directory: %w", err)
-	}
-	log.Printf("Creating temporary directory: %s", unfinishedDir)
-	if err := os.MkdirAll(unfinishedDir, 0755); err != nil {
-		return fmt.Errorf("failed to create unfinished directory: %w", err)
-	}
-
-	cmd := exec.Command("rsync", args...)
-	logFile, err := os.Create(filepath.Join(unfinishedDir, "rsync.log"))
-	if err != nil {
-		return fmt.Errorf("failed to create rsync log file: %w", err)
-	}
-	defer logFile.Close()
-
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-
-	log.Printf("Running command: rsync %s", strings.Join(args, " "))
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("rsync command failed: %w", err)
 	}
 
-	log.Printf("Renaming temporary directory %s to %s", unfinishedDir, finalDest)
-	if err := os.Rename(unfinishedDir, finalDest); err != nil {
-		return fmt.Errorf("failed to rename unfinished directory: %w", err)
+	if !dryRun {
+		log.Printf("Renaming temporary directory %s to %s", unfinishedDir, finalDest)
+		if err := os.Rename(unfinishedDir, finalDest); err != nil {
+			return fmt.Errorf("failed to rename unfinished directory: %w", err)
+		}
+	} else {
+		log.Printf("[Dry Run] Would rename %s to %s", unfinishedDir, finalDest)
 	}
 
 	log.Println("Backup finished successfully")
@@ -264,7 +260,7 @@ func purgeBackups(config *Config, dryRun bool) error {
 	for _, s := range snapshots {
 		if !to_keep[s.Name()] {
 			if dryRun {
-				log.Printf("[Dry Run] Would purge snapshot: %s", s.Name())
+				log.Printf("[Dry Run] Would purge snapshot directory: %s", filepath.Join(config.Destination, s.Name()))
 			} else {
 				log.Printf("Purging snapshot: %s", s.Name())
 				err := os.RemoveAll(filepath.Join(config.Destination, s.Name()))
