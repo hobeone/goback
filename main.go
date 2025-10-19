@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -18,12 +19,12 @@ var dryRun = flag.Bool("dry-run", false, "print actions without executing them")
 var configFile = flag.String("config", "config.yaml", "path to the configuration file")
 
 type Config struct {
-	Destination      string   `yaml:"destination"`
-	SnapshotPrefix   string   `yaml:"snapshot_prefix"`
-	Source           []string `yaml:"source"`
-	Exclude          []string `yaml:"exclude"`
-	Keep             Keep     `yaml:"keep"`
-	RsyncExtraFlags  string   `yaml:"rsync_extra_flags"`
+	Destination     string   `yaml:"destination"`
+	SnapshotPrefix  string   `yaml:"snapshot_prefix"`
+	Source          []string `yaml:"source"`
+	Exclude         []string `yaml:"exclude"`
+	Keep            Keep     `yaml:"keep"`
+	RsyncExtraFlags string   `yaml:"rsync_extra_flags"`
 }
 
 type Keep struct {
@@ -125,12 +126,16 @@ func runBackup(config *Config, dryRun bool) error {
 		cmd.Stderr = os.Stderr
 	} else {
 		logFile, err := os.Create(filepath.Join(unfinishedDir, "rsync.log"))
+
+		errorTee := io.MultiWriter(os.Stderr, logFile)
+
 		if err != nil {
 			return fmt.Errorf("failed to create rsync log file: %w", err)
 		}
+		//nolint:errcheck
 		defer logFile.Close()
 		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+		cmd.Stderr = errorTee
 	}
 
 	if err := cmd.Run(); err != nil {
@@ -183,10 +188,6 @@ func getLatestSnapshot(dest string) (string, error) {
 		return "", err
 	}
 	return snapshots[len(snapshots)-1].Name(), nil
-}
-
-func ageInDays(fi os.FileInfo) int {
-	return int(time.Since(fi.ModTime()).Hours() / 24)
 }
 
 func purgeBackups(config *Config, dryRun bool) error {
