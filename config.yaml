@@ -1,9 +1,9 @@
-destination: /home/hobe/tmp/backups
+destination: /mnt/backups
 snapshot_prefix: moria
 source:
-  - /home/hobe/tmp/doom eternal
+  - /home/example/directory
 exclude:
-  - /home/hobe/Documents/HOA
+  - /home/example/directory/exclude
 keep:
   daily: 7
   weekly: 4
