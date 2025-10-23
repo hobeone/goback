@@ -24,8 +24,9 @@ type Config struct {
 	SnapshotPrefix  string   `yaml:"snapshot_prefix"`
 	Source          []string `yaml:"source"`
 	Exclude         []string `yaml:"exclude"`
-	Keep            Keep     `yaml:"keep"`
-	RsyncExtraFlags string   `yaml:"rsync_extra_flags"`
+	Keep                       Keep     `yaml:"keep"`
+	RsyncExtraFlags            string   `yaml:"rsync_extra_flags"`
+	IgnoreVanishedFilesError bool     `yaml:"ignore_vanished_files_error"`
 }
 
 type Keep struct {
@@ -67,6 +68,8 @@ func readConfig(path string) (*Config, error) {
 
 	return &config, nil
 }
+
+var execCommand = exec.Command
 
 func runBackup(config *Config, dryRun bool) error {
 	log.Info().Strs("source", config.Source).Str("destination", config.Destination).Msg("Snapshot")
@@ -121,7 +124,7 @@ func runBackup(config *Config, dryRun bool) error {
 	args = append(args, config.Source...)
 	args = append(args, unfinishedDir)
 
-	cmd := exec.Command("rsync", args...)
+	cmd := execCommand("rsync", args...)
 	log.Info().Str("command", fmt.Sprintf("rsync %s", strings.Join(args, " "))).Msg("Running command")
 
 	if dryRun {
@@ -142,7 +145,15 @@ func runBackup(config *Config, dryRun bool) error {
 	}
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rsync command failed: %w", err)
+		if exitError, ok := err.(*exec.ExitError); ok {
+			if exitError.ExitCode() == 24 && config.IgnoreVanishedFilesError {
+				log.Warn().Msg("rsync completed with exit code 24, but ignoring due to configuration.")
+			} else {
+				return fmt.Errorf("rsync command failed: %w", err)
+			}
+		} else {
+			return fmt.Errorf("rsync command failed: %w", err)
+		}
 	}
 
 	if !dryRun {

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -101,6 +102,7 @@ keep:
   weekly: 1
   monthly: 1
 rsync_extra_flags: "--verbose"
+ignore_vanished_files_error: true
 `
 	tmpFile, err := os.CreateTemp("", "config-*.yaml")
 	if err != nil {
@@ -129,14 +131,120 @@ rsync_extra_flags: "--verbose"
 	if len(config.Source) != 1 || config.Source[0] != "/tmp/source1" {
 		t.Errorf("Expected source ['/tmp/source1'], got '%v'", config.Source)
 	}
-    if config.Keep.Daily != 1 {
-        t.Errorf("Expected keep.daily 1, got %d", config.Keep.Daily)
+    	if config.Keep.Daily != 1 {
+    		t.Errorf("Expected keep.daily 1, got %d", config.Keep.Daily)
+    	}
+    	if config.IgnoreVanishedFilesError != true {
+    		t.Errorf("Expected ignore_vanished_files_error true, got %v", config.IgnoreVanishedFilesError)
+    	}
     }
-}
-
 func TestReadConfig_NotFound(t *testing.T) {
     _, err := readConfig("non-existent-file.yaml")
-    if err == nil {
-        t.Errorf("Expected an error when reading a non-existent file, but got nil")
+        if err == nil {
+            t.Errorf("Expected an error when reading a non-existent file, but got nil")
+        }
     }
-}
+    
+    func TestRunBackupIgnoreVanishedFilesError(t *testing.T) {
+    	// Setup
+    	tmpDir, err := os.MkdirTemp("", "goback-test")
+    	if err != nil {
+    		t.Fatalf("Failed to create temp dir: %v", err)
+    	}
+    	defer os.RemoveAll(tmpDir)
+    
+    	sourceDir, err := os.MkdirTemp("", "goback-source")
+    	if err != nil {
+    		t.Fatalf("Failed to create temp dir: %v", err)
+    	}
+    	defer os.RemoveAll(sourceDir)
+    
+    	// Create a file in the source directory
+    	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
+    		t.Fatalf("Failed to create test file: %v", err)
+    	}
+    
+    	config := &Config{
+    		Destination:              tmpDir,
+    		SnapshotPrefix:           "test",
+    		Source:                   []string{sourceDir},
+    		IgnoreVanishedFilesError: true,
+    	}
+    
+    	execCommand = mockExecCommand
+    	defer func() { execCommand = exec.Command }()
+    
+    	err = runBackup(config, false)
+    	if err != nil {
+    		t.Fatalf("runBackup failed: %v", err)
+    	}
+    }
+    
+    func TestRunBackupIgnoreVanishedFilesError_False(t *testing.T) {
+    	// Setup
+    	tmpDir, err := os.MkdirTemp("", "goback-test")
+    	if err != nil {
+    		t.Fatalf("Failed to create temp dir: %v", err)
+    	}
+    	defer os.RemoveAll(tmpDir)
+    
+    	sourceDir, err := os.MkdirTemp("", "goback-source")
+    	if err != nil {
+    		t.Fatalf("Failed to create temp dir: %v", err)
+    	}
+    	defer os.RemoveAll(sourceDir)
+    
+    	// Create a file in the source directory
+    	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
+    		t.Fatalf("Failed to create test file: %v", err)
+    	}
+    
+    	config := &Config{
+    		Destination:              tmpDir,
+    		SnapshotPrefix:           "test",
+    		Source:                   []string{sourceDir},
+    		IgnoreVanishedFilesError: false,
+    	}
+    
+    	execCommand = mockExecCommand
+    	defer func() { execCommand = exec.Command }()
+    
+    	err = runBackup(config, false)
+    	if err == nil {
+    		t.Fatal("runBackup should have failed but didn't")
+    	}
+    }
+    
+    func mockExecCommand(command string, args ...string) *exec.Cmd {
+    	cs := []string{"-test.run=TestHelperProcess", "--", command}
+    	cs = append(cs, args...)
+    	cmd := exec.Command(os.Args[0], cs...)
+    	cmd.Env = []string{"GO_WANT_HELPER_PROCESS=1"}
+    	return cmd
+    }
+        
+    func TestHelperProcess(t *testing.T) {
+    	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+    		return
+    	}
+    	// Check the command line arguments to see which command we're supposed to be.
+    	args := os.Args
+    	for len(args) > 0 {
+    		if args[0] == "--" {
+    			args = args[1:]
+    			break
+    		}
+    		args = args[1:]
+    	}
+    	if len(args) == 0 {
+    		fmt.Fprintf(os.Stderr, "No command\n")
+    		os.Exit(2)
+    	}
+    
+    	cmd, args := args[0], args[1:]
+    	if cmd == "rsync" {
+    		// Simulate rsync exiting with code 24
+    		os.Exit(24)
+    	}
+    }
+    
