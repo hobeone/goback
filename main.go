@@ -20,12 +20,12 @@ var dryRun = flag.Bool("dry-run", false, "print actions without executing them")
 var configFile = flag.String("config", "config.yaml", "path to the configuration file")
 
 type Config struct {
-	Destination     string   `yaml:"destination"`
-	SnapshotPrefix  string   `yaml:"snapshot_prefix"`
-	Source          []string `yaml:"source"`
-	Exclude         []string `yaml:"exclude"`
-	Keep                       Keep     `yaml:"keep"`
-	RsyncExtraFlags            string   `yaml:"rsync_extra_flags"`
+	Destination              string   `yaml:"destination"`
+	SnapshotPrefix           string   `yaml:"snapshot_prefix"`
+	Source                   []string `yaml:"source"`
+	Exclude                  []string `yaml:"exclude"`
+	Keep                     Keep     `yaml:"keep"`
+	RsyncExtraFlags          string   `yaml:"rsync_extra_flags"`
 	IgnoreVanishedFilesError bool     `yaml:"ignore_vanished_files_error"`
 }
 
