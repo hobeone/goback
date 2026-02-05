@@ -31,10 +31,10 @@ func TestPurgeBackups(t *testing.T) {
 	now := time.Now()
 	ages := []int{
 		1, 2, // Daily
-		8, 9, // Week 2, 8 is newest
-		15, 16, // Week 3, 15 is newest
-		35, 36, // Month 2, 35 is newest
-		70, 71, // Month 3, 70 is newest
+		8, 9, // Week 2
+		15, 16, // Week 3
+		45, 46, // Month 2
+		75, 76, // Month 3
 	}
 	for _, age := range ages {
 		name := fmt.Sprintf("snapshot-%d", age)
@@ -59,7 +59,7 @@ func TestPurgeBackups(t *testing.T) {
 		"snapshot-2":  true, // daily
 		"snapshot-8":  true, // weekly
 		"snapshot-15": true, // weekly
-		"snapshot-35": true, // monthly
+		"snapshot-45": true, // monthly
 	}
 
 	files, err := os.ReadDir(tmpDir)
@@ -125,95 +125,163 @@ ignore_vanished_files_error: true
 	if config.Destination != "/tmp/backup" {
 		t.Errorf("Expected destination '/tmp/backup', got '%s'", config.Destination)
 	}
+	if config.Mode != "" && config.Mode != "snapshot" {
+		t.Errorf("Expected mode 'snapshot' or empty, got '%s'", config.Mode)
+	}
 	if config.SnapshotPrefix != "test" {
 		t.Errorf("Expected snapshot_prefix 'test', got '%s'", config.SnapshotPrefix)
 	}
 	if len(config.Source) != 1 || config.Source[0] != "/tmp/source1" {
 		t.Errorf("Expected source ['/tmp/source1'], got '%v'", config.Source)
 	}
-    	if config.Keep.Daily != 1 {
-    		t.Errorf("Expected keep.daily 1, got %d", config.Keep.Daily)
-    	}
-    	if config.IgnoreVanishedFilesError != true {
-    		t.Errorf("Expected ignore_vanished_files_error true, got %v", config.IgnoreVanishedFilesError)
-    	}
-    }
+	if config.Keep.Daily != 1 {
+		t.Errorf("Expected keep.daily 1, got %d", config.Keep.Daily)
+	}
+	if config.IgnoreVanishedFilesError != true {
+		t.Errorf("Expected ignore_vanished_files_error true, got %v", config.IgnoreVanishedFilesError)
+	}
+}
+
+func TestReadConfig_SimpleMode(t *testing.T) {
+	// Setup
+	configFileContent := `
+mode: simple
+destination: /tmp/backup
+source:
+  - /tmp/source1
+`
+	tmpFile, err := os.CreateTemp("", "config-*.yaml")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(configFileContent); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Execute
+	config, err := readConfig(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("readConfig failed: %v", err)
+	}
+
+	// Verify
+	if config.Mode != "simple" {
+		t.Errorf("Expected mode 'simple', got '%s'", config.Mode)
+	}
+	if config.Destination != "/tmp/backup" {
+		t.Errorf("Expected destination '/tmp/backup', got '%s'", config.Destination)
+	}
+}
+
 func TestReadConfig_NotFound(t *testing.T) {
-    _, err := readConfig("non-existent-file.yaml")
-        if err == nil {
-            t.Errorf("Expected an error when reading a non-existent file, but got nil")
-        }
-    }
-    
-    func TestRunBackupIgnoreVanishedFilesError(t *testing.T) {
-    	// Setup
-    	tmpDir, err := os.MkdirTemp("", "goback-test")
-    	if err != nil {
-    		t.Fatalf("Failed to create temp dir: %v", err)
-    	}
-    	defer os.RemoveAll(tmpDir)
-    
-    	sourceDir, err := os.MkdirTemp("", "goback-source")
-    	if err != nil {
-    		t.Fatalf("Failed to create temp dir: %v", err)
-    	}
-    	defer os.RemoveAll(sourceDir)
-    
-    	// Create a file in the source directory
-    	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
-    		t.Fatalf("Failed to create test file: %v", err)
-    	}
-    
-    	config := &Config{
-    		Destination:              tmpDir,
-    		SnapshotPrefix:           "test",
-    		Source:                   []string{sourceDir},
-    		IgnoreVanishedFilesError: true,
-    	}
-    
-    	execCommand = mockExecCommand
-    	defer func() { execCommand = exec.Command }()
-    
-    	err = runBackup(config, false)
-    	if err != nil {
-    		t.Fatalf("runBackup failed: %v", err)
-    	}
-    }
-    
-    func TestRunBackupIgnoreVanishedFilesError_False(t *testing.T) {
-    	// Setup
-    	tmpDir, err := os.MkdirTemp("", "goback-test")
-    	if err != nil {
-    		t.Fatalf("Failed to create temp dir: %v", err)
-    	}
-    	defer os.RemoveAll(tmpDir)
-    
-    	sourceDir, err := os.MkdirTemp("", "goback-source")
-    	if err != nil {
-    		t.Fatalf("Failed to create temp dir: %v", err)
-    	}
-    	defer os.RemoveAll(sourceDir)
-    
-    	// Create a file in the source directory
-    	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
-    		t.Fatalf("Failed to create test file: %v", err)
-    	}
-    
-    	config := &Config{
-    		Destination:              tmpDir,
-    		SnapshotPrefix:           "test",
-    		Source:                   []string{sourceDir},
-    		IgnoreVanishedFilesError: false,
-    	}
-    
-    	execCommand = mockExecCommand
-    	defer func() { execCommand = exec.Command }()
-    
-    	err = runBackup(config, false)
-    	if err == nil {
-    		t.Fatal("runBackup should have failed but didn't")
-    	}
-    }
+	_, err := readConfig("non-existent-file.yaml")
+	if err == nil {
+		t.Errorf("Expected an error when reading a non-existent file, but got nil")
+	}
+}
+
+func TestRunSnapshotBackupIgnoreVanishedFilesError(t *testing.T) {
+	// Setup
+	tmpDir, err := os.MkdirTemp("", "goback-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sourceDir, err := os.MkdirTemp("", "goback-source")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(sourceDir)
+
+	// Create a file in the source directory
+	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	config := &Config{
+		Destination:              tmpDir,
+		SnapshotPrefix:           "test",
+		Source:                   []string{sourceDir},
+		IgnoreVanishedFilesError: true,
+	}
+
+	execCommand = mockExecCommand
+	defer func() { execCommand = exec.Command }()
+
+	err = runSnapshotBackup(config, false)
+	if err != nil {
+		t.Fatalf("runSnapshotBackup failed: %v", err)
+	}
+}
+
+func TestRunSnapshotBackupIgnoreVanishedFilesError_False(t *testing.T) {
+	// Setup
+	tmpDir, err := os.MkdirTemp("", "goback-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sourceDir, err := os.MkdirTemp("", "goback-source")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(sourceDir)
+
+	// Create a file in the source directory
+	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	config := &Config{
+		Destination:              tmpDir,
+		SnapshotPrefix:           "test",
+		Source:                   []string{sourceDir},
+		IgnoreVanishedFilesError: false,
+	}
+
+	execCommand = mockExecCommand
+	defer func() { execCommand = exec.Command }()
+
+	err = runSnapshotBackup(config, false)
+	if err == nil {
+		t.Fatal("runSnapshotBackup should have failed but didn't")
+	}
+}
+
+func TestRunSimpleBackup(t *testing.T) {
+	// Setup
+	tmpDir, err := os.MkdirTemp("", "goback-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	sourceDir, err := os.MkdirTemp("", "goback-source")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(sourceDir)
+
+	config := &Config{
+		Mode:                     "simple",
+		Destination:              tmpDir,
+		Source:                   []string{sourceDir},
+		IgnoreVanishedFilesError: true,
+	}
+
+	execCommand = mockExecCommand
+	defer func() { execCommand = exec.Command }()
+
+	err = runSimpleBackup(config, false)
+	if err != nil {
+		t.Fatalf("runSimpleBackup failed: %v", err)
+	}
+}
     
     func mockExecCommand(command string, args ...string) *exec.Cmd {
     	cs := []string{"-test.run=TestHelperProcess", "--", command}

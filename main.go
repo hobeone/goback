@@ -20,6 +20,7 @@ var dryRun = flag.Bool("dry-run", false, "print actions without executing them")
 var configFile = flag.String("config", "config.yaml", "path to the configuration file")
 
 type Config struct {
+	Mode                     string   `yaml:"mode"`
 	Destination              string   `yaml:"destination"`
 	SnapshotPrefix           string   `yaml:"snapshot_prefix"`
 	Source                   []string `yaml:"source"`
@@ -45,12 +46,20 @@ func main() {
 		log.Fatal().Err(err).Msg("error reading config")
 	}
 
-	if err := runBackup(config, *dryRun); err != nil {
-		log.Fatal().Err(err).Msg("backup failed")
-	}
+	if config.Mode == "" || config.Mode == "snapshot" {
+		if err := runSnapshotBackup(config, *dryRun); err != nil {
+			log.Fatal().Err(err).Msg("snapshot backup failed")
+		}
 
-	if err := purgeBackups(config, *dryRun); err != nil {
-		log.Fatal().Err(err).Msg("purging old backups failed")
+		if err := purgeBackups(config, *dryRun); err != nil {
+			log.Fatal().Err(err).Msg("purging old backups failed")
+		}
+	} else if config.Mode == "simple" {
+		if err := runSimpleBackup(config, *dryRun); err != nil {
+			log.Fatal().Err(err).Msg("simple backup failed")
+		}
+	} else {
+		log.Fatal().Str("mode", config.Mode).Msg("invalid backup mode")
 	}
 }
 
@@ -71,8 +80,8 @@ func readConfig(path string) (*Config, error) {
 
 var execCommand = exec.Command
 
-func runBackup(config *Config, dryRun bool) error {
-	log.Info().Strs("source", config.Source).Str("destination", config.Destination).Msg("Snapshot")
+func runSnapshotBackup(config *Config, dryRun bool) error {
+	log.Info().Strs("source", config.Source).Str("destination", config.Destination).Msg("Snapshot Backup")
 
 	unfinishedDir := filepath.Join(config.Destination, ".unfinished")
 	snapshotName := fmt.Sprintf("%s_%s", config.SnapshotPrefix, time.Now().Format("2006-01-02_15:04:05"))
@@ -97,9 +106,49 @@ func runBackup(config *Config, dryRun bool) error {
 		return fmt.Errorf("failed to get latest snapshot: %w", err)
 	}
 
-	args := []string{"-a", "-v", "-h", "--delete", "--stats", "--inplace"}
+	linkDest := ""
 	if latestSnapshot != "" {
-		args = append(args, "--link-dest="+filepath.Join(config.Destination, latestSnapshot))
+		linkDest = filepath.Join(config.Destination, latestSnapshot)
+	}
+
+	if err := runRsync(config, unfinishedDir, linkDest, dryRun); err != nil {
+		return err
+	}
+
+	if !dryRun {
+		log.Info().Str("from", unfinishedDir).Str("to", finalDest).Msg("Renaming temporary directory")
+		if err := os.Rename(unfinishedDir, finalDest); err != nil {
+			return fmt.Errorf("failed to rename unfinished directory: %w", err)
+		}
+	} else {
+		log.Info().Str("from", unfinishedDir).Str("to", finalDest).Msg("[Dry Run] Would rename")
+	}
+
+	log.Info().Msg("Snapshot backup finished successfully")
+	return nil
+}
+
+func runSimpleBackup(config *Config, dryRun bool) error {
+	log.Info().Strs("source", config.Source).Str("destination", config.Destination).Msg("Simple Backup")
+
+	if !dryRun {
+		if err := os.MkdirAll(config.Destination, 0755); err != nil {
+			return fmt.Errorf("failed to create destination directory: %w", err)
+		}
+	}
+
+	if err := runRsync(config, config.Destination, "", dryRun); err != nil {
+		return err
+	}
+
+	log.Info().Msg("Simple backup finished successfully")
+	return nil
+}
+
+func runRsync(config *Config, destDir string, linkDest string, dryRun bool) error {
+	args := []string{"-a", "-v", "-h", "--delete", "--stats", "--inplace", "--copy-links"}
+	if linkDest != "" {
+		args = append(args, "--link-dest="+linkDest)
 	}
 	for _, ex := range config.Exclude {
 		args = append(args, "--exclude="+ex)
@@ -122,7 +171,7 @@ func runBackup(config *Config, dryRun bool) error {
 	}
 
 	args = append(args, config.Source...)
-	args = append(args, unfinishedDir)
+	args = append(args, destDir)
 
 	cmd := execCommand("rsync", args...)
 	log.Info().Str("command", fmt.Sprintf("rsync %s", strings.Join(args, " "))).Msg("Running command")
@@ -131,16 +180,21 @@ func runBackup(config *Config, dryRun bool) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 	} else {
-		logFile, err := os.Create(filepath.Join(unfinishedDir, "rsync.log"))
-
-		errorTee := io.MultiWriter(os.Stderr, logFile)
-
-		if err != nil {
-			return fmt.Errorf("failed to create rsync log file: %w", err)
+		var logWriter io.Writer
+		if config.Mode == "simple" {
+			logWriter = os.Stdout
+		} else {
+			logFile, err := os.Create(filepath.Join(destDir, "rsync.log"))
+			if err != nil {
+				return fmt.Errorf("failed to create rsync log file: %w", err)
+			}
+			//nolint:errcheck
+			defer logFile.Close()
+			logWriter = logFile
 		}
-		//nolint:errcheck
-		defer logFile.Close()
-		cmd.Stdout = logFile
+
+		errorTee := io.MultiWriter(os.Stderr, logWriter)
+		cmd.Stdout = logWriter
 		cmd.Stderr = errorTee
 	}
 
@@ -156,16 +210,6 @@ func runBackup(config *Config, dryRun bool) error {
 		}
 	}
 
-	if !dryRun {
-		log.Info().Str("from", unfinishedDir).Str("to", finalDest).Msg("Renaming temporary directory")
-		if err := os.Rename(unfinishedDir, finalDest); err != nil {
-			return fmt.Errorf("failed to rename unfinished directory: %w", err)
-		}
-	} else {
-		log.Info().Str("from", unfinishedDir).Str("to", finalDest).Msg("[Dry Run] Would rename")
-	}
-
-	log.Info().Msg("Backup finished successfully")
 	return nil
 }
 

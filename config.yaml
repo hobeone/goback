@@ -1,3 +1,5 @@
+# Backup mode: "snapshot" (default, incremental with rotation) or "simple" (direct rsync)
+mode: snapshot
 destination: /mnt/backups
 snapshot_prefix: moria
 source:
