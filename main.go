@@ -146,7 +146,7 @@ func runSimpleBackup(config *Config, dryRun bool) error {
 }
 
 func runRsync(config *Config, destDir string, linkDest string, dryRun bool) error {
-	args := []string{"-a", "-v", "-h", "--delete", "--stats", "--inplace", "--copy-links"}
+	args := []string{"-a", "-v", "-h", "--delete", "--stats", "--inplace"}
 	if linkDest != "" {
 		args = append(args, "--link-dest="+linkDest)
 	}
@@ -154,7 +154,7 @@ func runRsync(config *Config, destDir string, linkDest string, dryRun bool) erro
 		args = append(args, "--exclude="+ex)
 	}
 	if config.RsyncExtraFlags != "" {
-		args = append(args, strings.Split(config.RsyncExtraFlags, " ")...)
+		args = append(args, strings.Fields(config.RsyncExtraFlags)...)
 	}
 
 	if dryRun {
