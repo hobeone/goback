@@ -49,7 +49,8 @@ func TestPurgeBackups(t *testing.T) {
 	}
 
 	// Execute
-	if err := purgeBackups(config, false); err != nil {
+	app := &App{config: config, dryRun: false}
+	if err := app.purgeBackups(); err != nil {
 		t.Fatalf("purgeBackups failed: %v", err)
 	}
 
@@ -209,10 +210,8 @@ func TestRunSnapshotBackupIgnoreVanishedFilesError(t *testing.T) {
 		IgnoreVanishedFilesError: true,
 	}
 
-	execCommand = mockExecCommand
-	defer func() { execCommand = exec.Command }()
-
-	err = runSnapshotBackup(config, false)
+	app := &App{config: config, dryRun: false, execCmd: mockExecCommand}
+	err = app.runSnapshotBackup()
 	if err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
 	}
@@ -244,10 +243,8 @@ func TestRunSnapshotBackupIgnoreVanishedFilesError_False(t *testing.T) {
 		IgnoreVanishedFilesError: false,
 	}
 
-	execCommand = mockExecCommand
-	defer func() { execCommand = exec.Command }()
-
-	err = runSnapshotBackup(config, false)
+	app := &App{config: config, dryRun: false, execCmd: mockExecCommand}
+	err = app.runSnapshotBackup()
 	if err == nil {
 		t.Fatal("runSnapshotBackup should have failed but didn't")
 	}
@@ -274,10 +271,8 @@ func TestRunSimpleBackup(t *testing.T) {
 		IgnoreVanishedFilesError: true,
 	}
 
-	execCommand = mockExecCommand
-	defer func() { execCommand = exec.Command }()
-
-	err = runSimpleBackup(config, false)
+	app := &App{config: config, dryRun: false, execCmd: mockExecCommand}
+	err = app.runSimpleBackup()
 	if err != nil {
 		t.Fatalf("runSimpleBackup failed: %v", err)
 	}
