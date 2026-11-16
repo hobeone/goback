@@ -100,7 +100,7 @@ func (a *App) runSnapshotBackup() error {
 	log.Info().Strs("source", a.config.Source).Str("destination", a.config.Destination).Msg("starting snapshot backup")
 
 	unfinishedDir := filepath.Join(a.config.Destination, ".unfinished")
-	snapshotName := fmt.Sprintf("%s_%s", a.config.SnapshotPrefix, time.Now().Format("2006-01-02_15:04:05"))
+	snapshotName := fmt.Sprintf("%s_%s", a.config.SnapshotPrefix, time.Now().Format(snapshotTimeLayout))
 	finalDest := filepath.Join(a.config.Destination, snapshotName)
 
 	if !a.dryRun {
@@ -117,7 +117,7 @@ func (a *App) runSnapshotBackup() error {
 		log.Info().Str("path", unfinishedDir).Msg("[dry run] would create temporary directory")
 	}
 
-	latestSnapshot, err := a.getLatestSnapshot(a.config.Destination)
+	latestSnapshot, err := a.getLatestSnapshot()
 	if err != nil {
 		return fmt.Errorf("failed to get latest snapshot: %w", err)
 	}
@@ -225,7 +225,38 @@ func (a *App) runRsync(destDir string, linkDest string) (retErr error) {
 	return nil
 }
 
-func getSnapshots(dest string) ([]os.FileInfo, error) {
+// snapshotTimeLayout is the timestamp format embedded in snapshot names,
+// which have the form <prefix>_<timestamp> in local time.
+const snapshotTimeLayout = "2006-01-02_15:04:05"
+
+type snapshot struct {
+	name string
+	time time.Time // creation time, parsed from name
+}
+
+// parseSnapshotName reports whether name is a snapshot created with prefix
+// and, if so, the creation time encoded in it.
+func parseSnapshotName(name, prefix string) (time.Time, bool) {
+	stamp, ok := strings.CutPrefix(name, prefix+"_")
+	if !ok {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation(snapshotTimeLayout, stamp, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// getSnapshots returns the snapshots in dest, oldest first. Only directories
+// named <prefix>_<timestamp> count. Anything else (lost+found, snapshots
+// made under a different prefix, unrelated data) is ignored, so it is never
+// used as --link-dest and never purged.
+//
+// Order comes from the name rather than the directory mtime because rsync -a
+// copies the source directory's mtime onto the snapshot root when a source
+// path ends in a slash.
+func getSnapshots(dest, prefix string) ([]snapshot, error) {
 	entries, err := os.ReadDir(dest)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -234,34 +265,36 @@ func getSnapshots(dest string) ([]os.FileInfo, error) {
 		return nil, err
 	}
 
-	var snapshots []os.FileInfo
+	var snapshots []snapshot
 	for _, entry := range entries {
-		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-			info, err := entry.Info()
-			if err != nil {
-				return nil, err
-			}
-			snapshots = append(snapshots, info)
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
 		}
+		t, ok := parseSnapshotName(entry.Name(), prefix)
+		if !ok {
+			log.Info().Str("dir", entry.Name()).Str("prefix", prefix).Msg("ignoring directory that is not a snapshot")
+			continue
+		}
+		snapshots = append(snapshots, snapshot{name: entry.Name(), time: t})
 	}
 
-	slices.SortFunc(snapshots, func(a, b os.FileInfo) int {
-		return a.ModTime().Compare(b.ModTime())
+	slices.SortFunc(snapshots, func(a, b snapshot) int {
+		return a.time.Compare(b.time)
 	})
 
 	return snapshots, nil
 }
 
-func (a *App) getLatestSnapshot(dest string) (string, error) {
-	snapshots, err := getSnapshots(dest)
+func (a *App) getLatestSnapshot() (string, error) {
+	snapshots, err := getSnapshots(a.config.Destination, a.config.SnapshotPrefix)
 	if err != nil || len(snapshots) == 0 {
 		return "", err
 	}
-	return snapshots[len(snapshots)-1].Name(), nil
+	return snapshots[len(snapshots)-1].name, nil
 }
 
 func (a *App) purgeBackups() error {
-	snapshots, err := getSnapshots(a.config.Destination)
+	snapshots, err := getSnapshots(a.config.Destination, a.config.SnapshotPrefix)
 	if err != nil {
 		return err
 	}
@@ -281,9 +314,9 @@ func (a *App) purgeBackups() error {
 		if dailyCount >= a.config.Keep.Daily {
 			break
 		}
-		if !toKeep[s.Name()] {
-			log.Info().Str("snapshot", s.Name()).Msg("keeping as daily backup")
-			toKeep[s.Name()] = true
+		if !toKeep[s.name] {
+			log.Info().Str("snapshot", s.name).Msg("keeping as daily backup")
+			toKeep[s.name] = true
 			dailyCount++
 		}
 	}
@@ -295,13 +328,13 @@ func (a *App) purgeBackups() error {
 		if weeklyCount >= a.config.Keep.Weekly {
 			break
 		}
-		year, week := s.ModTime().ISOWeek()
+		year, week := s.time.ISOWeek()
 		weekKey := year*100 + week
 		if !weeksSeen[weekKey] {
 			weeksSeen[weekKey] = true
-			if !toKeep[s.Name()] {
-				log.Info().Str("snapshot", s.Name()).Msg("keeping as weekly backup")
-				toKeep[s.Name()] = true
+			if !toKeep[s.name] {
+				log.Info().Str("snapshot", s.name).Msg("keeping as weekly backup")
+				toKeep[s.name] = true
 				weeklyCount++
 			}
 		}
@@ -314,13 +347,13 @@ func (a *App) purgeBackups() error {
 		if monthlyCount >= a.config.Keep.Monthly {
 			break
 		}
-		year, month, _ := s.ModTime().Date()
+		year, month, _ := s.time.Date()
 		monthKey := year*100 + int(month)
 		if !monthsSeen[monthKey] {
 			monthsSeen[monthKey] = true
-			if !toKeep[s.Name()] {
-				log.Info().Str("snapshot", s.Name()).Msg("keeping as monthly backup")
-				toKeep[s.Name()] = true
+			if !toKeep[s.name] {
+				log.Info().Str("snapshot", s.name).Msg("keeping as monthly backup")
+				toKeep[s.name] = true
 				monthlyCount++
 			}
 		}
@@ -328,14 +361,14 @@ func (a *App) purgeBackups() error {
 
 	log.Info().Msg("--- purge summary ---")
 	for _, s := range snapshots {
-		if !toKeep[s.Name()] {
-			path := filepath.Join(a.config.Destination, s.Name())
+		if !toKeep[s.name] {
+			path := filepath.Join(a.config.Destination, s.name)
 			if a.dryRun {
 				log.Info().Str("path", path).Msg("[dry run] would purge snapshot")
 			} else {
-				log.Info().Str("snapshot", s.Name()).Msg("purging snapshot")
+				log.Info().Str("snapshot", s.name).Msg("purging snapshot")
 				if err := os.RemoveAll(path); err != nil {
-					log.Error().Err(err).Str("snapshot", s.Name()).Msg("failed to purge snapshot")
+					log.Error().Err(err).Str("snapshot", s.name).Msg("failed to purge snapshot")
 				}
 			}
 		}

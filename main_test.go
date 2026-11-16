@@ -18,11 +18,28 @@ func day(year int, month time.Month, d int) time.Time {
 	return time.Date(year, month, d, 12, 0, 0, 0, time.Local)
 }
 
+// snapName returns the directory name goback gives a snapshot taken at t.
+func snapName(prefix string, t time.Time) string {
+	return prefix + "_" + t.Format(snapshotTimeLayout)
+}
+
+// mkdirWithMtime creates dir and sets its mtime.
+func mkdirWithMtime(t *testing.T, dir string, mtime time.Time) {
+	t.Helper()
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatalf("Failed to create dir: %v", err)
+	}
+	if err := os.Chtimes(dir, mtime, mtime); err != nil {
+		t.Fatalf("Failed to set mod time: %v", err)
+	}
+}
+
 func TestPurgeBackups(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	config := &Config{
-		Destination: tmpDir,
+		Destination:    tmpDir,
+		SnapshotPrefix: "host",
 		Keep: Keep{
 			Daily:   2,
 			Weekly:  2,
@@ -30,29 +47,46 @@ func TestPurgeBackups(t *testing.T) {
 		},
 	}
 
-	// Fixed dates, so the outcome cannot depend on when the test runs.
-	// ISO weeks in 2025: Jun 16-22 = W25, Jun 9-15 = W24, Jun 2-8 = W23,
-	// May 26-Jun 1 = W22.
-	snapshots := map[string]time.Time{
-		"2025-06-18": day(2025, time.June, 18),  // W25: daily
-		"2025-06-17": day(2025, time.June, 17),  // W25: daily
-		"2025-06-16": day(2025, time.June, 16),  // W25: bucket already claimed by a daily -> purge
-		"2025-06-11": day(2025, time.June, 11),  // W24: weekly
-		"2025-06-10": day(2025, time.June, 10),  // W24: purge
-		"2025-06-04": day(2025, time.June, 4),   // W23: weekly
-		"2025-06-03": day(2025, time.June, 3),   // W23: purge
-		"2025-05-28": day(2025, time.May, 28),   // weekly slots full; May is first unclaimed month -> monthly
-		"2025-05-27": day(2025, time.May, 27),   // May already claimed -> purge
-		"2025-04-15": day(2025, time.April, 15), // monthly slots full -> purge
+	// Fixed dates, newest first, so the outcome cannot depend on when the
+	// test runs. ISO weeks in 2025: Jun 16-22 = W25, Jun 9-15 = W24,
+	// Jun 2-8 = W23, May 26-Jun 1 = W22.
+	dates := []struct {
+		t    time.Time
+		keep bool
+	}{
+		{day(2025, time.June, 18), true},   // W25: daily
+		{day(2025, time.June, 17), true},   // W25: daily
+		{day(2025, time.June, 16), false},  // W25: bucket already claimed by a daily
+		{day(2025, time.June, 11), true},   // W24: weekly
+		{day(2025, time.June, 10), false},  // W24: bucket taken
+		{day(2025, time.June, 4), true},    // W23: weekly
+		{day(2025, time.June, 3), false},   // W23: bucket taken
+		{day(2025, time.May, 28), true},    // weekly slots full; first unclaimed month -> monthly
+		{day(2025, time.May, 27), false},   // May already claimed
+		{day(2025, time.April, 15), false}, // monthly slots full
 	}
-	for name, modTime := range snapshots {
-		path := filepath.Join(tmpDir, name)
-		if err := os.Mkdir(path, 0755); err != nil {
-			t.Fatalf("Failed to create dir: %v", err)
+
+	expected := make(map[string]bool)
+	for i, d := range dates {
+		name := snapName("host", d.t)
+		// Directory mtimes run in the opposite order to the names, as can
+		// happen when rsync copies a source dir's mtime onto the snapshot.
+		// Retention must follow the names.
+		mkdirWithMtime(t, filepath.Join(tmpDir, name), day(2030, time.January, 1).AddDate(0, 0, i))
+		if d.keep {
+			expected[name] = true
 		}
-		if err := os.Chtimes(path, modTime, modTime); err != nil {
-			t.Fatalf("Failed to set mod time: %v", err)
-		}
+	}
+
+	// Directories that are not snapshots of this prefix must never be purged.
+	for _, decoy := range []string{
+		"lost+found",
+		snapName("other", day(2025, time.April, 1)),
+		"host_not-a-timestamp",
+		day(2025, time.April, 1).Format(snapshotTimeLayout), // no prefix
+	} {
+		mkdirWithMtime(t, filepath.Join(tmpDir, decoy), day(2020, time.January, 1))
+		expected[decoy] = true
 	}
 
 	app := &App{config: config, dryRun: false}
@@ -60,35 +94,43 @@ func TestPurgeBackups(t *testing.T) {
 		t.Fatalf("purgeBackups failed: %v", err)
 	}
 
-	expectedToKeep := map[string]bool{
-		"2025-06-18": true, // daily
-		"2025-06-17": true, // daily
-		"2025-06-11": true, // weekly
-		"2025-06-04": true, // weekly
-		"2025-05-28": true, // monthly
-	}
-
-	files, err := os.ReadDir(tmpDir)
-	if err != nil {
-		t.Fatalf("Failed to read dir: %v", err)
-	}
-
 	found := make(map[string]bool)
-	for _, f := range files {
-		found[f.Name()] = true
+	for _, name := range dirNames(t, tmpDir) {
+		found[name] = true
 	}
 
-	if len(found) != len(expectedToKeep) {
-		t.Errorf("Expected %d snapshots, but found %d", len(expectedToKeep), len(found))
-	}
-	for name := range expectedToKeep {
+	for name := range expected {
 		if !found[name] {
-			t.Errorf("Expected to find snapshot %s, but it was deleted", name)
+			t.Errorf("Expected %s to be kept, but it was deleted", name)
 		}
 	}
 	for name := range found {
-		if !expectedToKeep[name] {
-			t.Errorf("Expected snapshot %s to be deleted, but it was kept", name)
+		if !expected[name] {
+			t.Errorf("Expected %s to be deleted, but it was kept", name)
+		}
+	}
+}
+
+func TestParseSnapshotName(t *testing.T) {
+	tests := []struct {
+		name, prefix string
+		want         time.Time
+		ok           bool
+	}{
+		{"host_2025-06-18_13:14:15", "host", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
+		{"_2025-06-18_13:14:15", "", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
+		{"my_host_2025-06-18_13:14:15", "my_host", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
+		{"my_host_2025-06-18_13:14:15", "my", time.Time{}, false}, // prefix must match exactly
+		{"other_2025-06-18_13:14:15", "host", time.Time{}, false},
+		{"host_2025-06-18", "host", time.Time{}, false},
+		{"host_2025-06-18_13:14:15.bak", "host", time.Time{}, false},
+		{"host-2025-06-18_13:14:15", "host", time.Time{}, false},
+		{"lost+found", "host", time.Time{}, false},
+	}
+	for _, tt := range tests {
+		got, ok := parseSnapshotName(tt.name, tt.prefix)
+		if ok != tt.ok || !got.Equal(tt.want) {
+			t.Errorf("parseSnapshotName(%q, %q) = %v, %v; want %v, %v", tt.name, tt.prefix, got, ok, tt.want, tt.ok)
 		}
 	}
 }
@@ -377,8 +419,12 @@ func TestRunSnapshotBackup_CommitsSnapshot(t *testing.T) {
 
 	// .unfinished was renamed into a single prefixed snapshot holding rsync.log.
 	names := dirNames(t, dest)
-	if len(names) != 1 || !strings.HasPrefix(names[0], "host_") {
-		t.Fatalf("Expected one host_* snapshot, got %q", names)
+	if len(names) != 1 {
+		t.Fatalf("Expected one snapshot, got %q", names)
+	}
+	// The name goback writes must be one it later recognises as a snapshot.
+	if _, ok := parseSnapshotName(names[0], "host"); !ok {
+		t.Errorf("created snapshot %q is not recognised by parseSnapshotName", names[0])
 	}
 	if _, err := os.Stat(filepath.Join(dest, names[0], "rsync.log")); err != nil {
 		t.Errorf("rsync.log missing from snapshot: %v", err)
@@ -387,18 +433,12 @@ func TestRunSnapshotBackup_CommitsSnapshot(t *testing.T) {
 
 func TestRunSnapshotBackup_LinksAgainstLatest(t *testing.T) {
 	dest := t.TempDir()
-	for name, modTime := range map[string]time.Time{
-		"host_2025-06-17_12:00:00": day(2025, time.June, 17),
-		"host_2025-06-18_12:00:00": day(2025, time.June, 18),
-	} {
-		path := filepath.Join(dest, name)
-		if err := os.Mkdir(path, 0755); err != nil {
-			t.Fatalf("Failed to create dir: %v", err)
-		}
-		if err := os.Chtimes(path, modTime, modTime); err != nil {
-			t.Fatalf("Failed to set mod time: %v", err)
-		}
-	}
+	// mtimes contradict the names (as after rsync copies a source dir's
+	// mtime), and a non-snapshot directory is the most recently modified.
+	// The newest snapshot by name must still win.
+	mkdirWithMtime(t, filepath.Join(dest, "host_2025-06-17_12:00:00"), day(2025, time.June, 30))
+	mkdirWithMtime(t, filepath.Join(dest, "host_2025-06-18_12:00:00"), day(2020, time.January, 1))
+	mkdirWithMtime(t, filepath.Join(dest, "lost+found"), day(2026, time.January, 1))
 
 	rec := newExecRecorder(0)
 	app := &App{

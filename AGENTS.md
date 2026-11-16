@@ -80,12 +80,24 @@ one `--exclude=…` per entry, the extra flags, sources, and dest. Specifically:
 
 ### Snapshot discovery (`getSnapshots`)
 
-A snapshot is **any non-dot directory directly under `destination`**, sorted by
-**directory mtime**. Two consequences matter for any change to this code:
+A snapshot is a directory directly under `destination` whose name is exactly
+`<snapshot_prefix>_<2006-01-02_15:04:05>` (local time, `snapshotTimeLayout`), as
+checked by `parseSnapshotName`. Snapshots are ordered by the **timestamp in the name**,
+and purge buckets use that same time. Directory mtimes are never consulted. Invariants:
 
-1. **`snapshot_prefix` is not a filter.** Any other directory placed in `destination`
-   counts as a snapshot and can be **deleted by purge**.
-2. **Order comes from mtime, not from the timestamp in the name.** See *Known issues*.
+1. **Anything else in `destination` is ignored.** That includes `lost+found`, other
+   prefixes, and unrelated data. It's logged as "ignoring directory that is not a
+   snapshot", never used as `--link-dest`, and **never purged**.
+2. **Don't go back to mtime ordering.** With a trailing-slash source (`/data/`),
+   `rsync -a` copies the source directory's mtime onto the snapshot root. That made new
+   snapshots look old and broke `--link-dest` selection and retention.
+3. **Changing `snapshot_prefix` orphans existing snapshots.** They stop being linked
+   against or purged, and the next run is a full copy. This is deliberate: an
+   unrecognized directory is left alone rather than deleted. Rename old snapshots by
+   hand to migrate them.
+4. The snapshot name format is both written (`runSnapshotBackup`) and parsed
+   (`getSnapshots`). Change both together. `TestRunSnapshotBackup_CommitsSnapshot`
+   checks that what's written can be parsed back.
 
 ## Configuration
 
@@ -93,7 +105,7 @@ A snapshot is **any non-dot directory directly under `destination`**, sorted by
 |---|---|
 | `mode` | `snapshot` (default when empty) or `simple`; anything else is an error |
 | `destination` | Root for snapshots (snapshot mode) or the sync target (simple mode) |
-| `snapshot_prefix` | Name prefix only; not used to identify snapshots |
+| `snapshot_prefix` | Identifies which directories are snapshots; see *Snapshot discovery* |
 | `source` | List of paths passed to rsync as given (trailing slashes matter to rsync) |
 | `exclude` | Each entry becomes `--exclude=<entry>` |
 | `keep.daily/weekly/monthly` | Ints; **all zero means purge deletes every snapshot**, including the one just made |
@@ -108,14 +120,10 @@ block, goes straight to rsync or purge.
 These were confirmed on 2026-11-16. Fix them deliberately, with tests. Don't
 "tidy" around them.
 
-1. **mtime ordering can be corrupted by rsync.** With a trailing-slash source (`/data/`),
-   `rsync -a` copies the source directory's mtime onto `.unfinished`. The new snapshot
-   can then look *older* than existing ones, which breaks both `--link-dest` selection
-   and retention. Verified: `rsync -a src/ d1` gave `d1` the mtime of `src`. Parsing
-   the timestamp from the snapshot name would be more robust.
-2. **Purge can delete things that aren't snapshots** (see *Snapshot discovery*).
-3. **An all-zero or missing `keep` block deletes everything.**
-4. **Snapshot names contain `:`**, which won't work on SMB/exFAT/Windows-backed destinations.
+1. **An all-zero or missing `keep` block deletes every snapshot** of the configured
+   prefix, including the one just made.
+2. **Snapshot names contain `:`**, which won't work on SMB/exFAT/Windows-backed
+   destinations.
 
 ## Testing conventions
 

@@ -48,7 +48,7 @@ rsync_extra_flags: "--compress"
 ### Configuration Options
 
 -   `destination`: The directory where snapshots will be stored.
--   `snapshot_prefix`: A prefix for the snapshot directory names (e.g., `server_2025-10-18_13:14:20`).
+-   `snapshot_prefix`: A prefix for the snapshot directory names (e.g., `server_2025-10-18_13:14:20`). Only directories named `<snapshot_prefix>_<timestamp>` are treated as snapshots. Anything else in `destination` (such as `lost+found`) is never hard-linked against or purged. If you change the prefix, existing snapshots are no longer recognized: the next backup is a full copy, and the old snapshots are left in place.
 -   `source`: A list of files and directories to back up.
 -   `exclude`: A list of patterns to exclude from the backup. These are passed to `rsync`'s `--exclude` flag.
 -   `keep`: Specifies the number of snapshots to keep for each category.
@@ -87,7 +87,7 @@ go run main.go
 
 ### Purging Process
 
-The script purges old backups based on the `keep` configuration:
+The script purges old backups based on the `keep` configuration. Snapshot age comes from the timestamp in each snapshot's name, not from the directory's modification time:
 
 1.  It keeps the `keep.daily` most recent snapshots.
 2.  It then keeps the `keep.weekly` most recent weekly snapshots. A weekly snapshot is the newest snapshot within a given calendar week.
