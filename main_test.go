@@ -18,11 +18,6 @@ func day(year int, month time.Month, d int) time.Time {
 	return time.Date(year, month, d, 12, 0, 0, 0, time.Local)
 }
 
-// snapName returns the directory name goback gives a snapshot taken at t.
-func snapName(prefix string, t time.Time) string {
-	return prefix + "_" + t.Format(snapshotTimeLayout)
-}
-
 // mkdirWithMtime creates dir and sets its mtime.
 func mkdirWithMtime(t *testing.T, dir string, mtime time.Time) {
 	t.Helper()
@@ -68,7 +63,7 @@ func TestPurgeBackups(t *testing.T) {
 
 	expected := make(map[string]bool)
 	for i, d := range dates {
-		name := snapName("host", d.t)
+		name := snapshotDirName("host", d.t)
 		// Directory mtimes run in the opposite order to the names, as can
 		// happen when rsync copies a source dir's mtime onto the snapshot.
 		// Retention must follow the names.
@@ -81,7 +76,7 @@ func TestPurgeBackups(t *testing.T) {
 	// Directories that are not snapshots of this prefix must never be purged.
 	for _, decoy := range []string{
 		"lost+found",
-		snapName("other", day(2025, time.April, 1)),
+		snapshotDirName("other", day(2025, time.April, 1)),
 		"host_not-a-timestamp",
 		day(2025, time.April, 1).Format(snapshotTimeLayout), // no prefix
 	} {
@@ -213,16 +208,6 @@ func TestReadConfig_NotFound(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected an error when reading a non-existent file, but got nil")
 	}
-}
-
-// newSourceDir creates a temp source directory containing one file.
-func newSourceDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "testfile"), []byte("test"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-	return dir
 }
 
 // execRecorder stands in for exec.Command. Each call is recorded, and the
@@ -363,7 +348,7 @@ func TestRunRsyncExitCodes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			app := &App{
 				config: &Config{
-					Source:                   []string{newSourceDir(t)},
+					Source:                   []string{"/src"},
 					IgnoreVanishedFilesError: tt.ignoreVanish,
 				},
 				execCmd: newExecRecorder(tt.exitCode).command,
@@ -390,17 +375,24 @@ func dirNames(t *testing.T, dir string) []string {
 	return names
 }
 
-func TestRunSnapshotBackup_CommitsSnapshot(t *testing.T) {
-	dest := t.TempDir()
-	rec := newExecRecorder(0)
-	app := &App{
+// newSnapshotApp returns a snapshot-mode App backing up to dest with prefix
+// "host", with rsync replaced by rec. The source path is never read, since
+// rsync is faked.
+func newSnapshotApp(dest string, rec *execRecorder) *App {
+	return &App{
 		config: &Config{
 			Destination:    dest,
 			SnapshotPrefix: "host",
-			Source:         []string{newSourceDir(t)},
+			Source:         []string{"/src"},
 		},
 		execCmd: rec.command,
 	}
+}
+
+func TestRunSnapshotBackup_CommitsSnapshot(t *testing.T) {
+	dest := t.TempDir()
+	rec := newExecRecorder(0)
+	app := newSnapshotApp(dest, rec)
 
 	if err := app.runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
@@ -411,10 +403,8 @@ func TestRunSnapshotBackup_CommitsSnapshot(t *testing.T) {
 	if got, want := argv[len(argv)-1], filepath.Join(dest, ".unfinished"); got != want {
 		t.Errorf("rsync dest = %q, want %q", got, want)
 	}
-	for _, a := range argv {
-		if strings.HasPrefix(a, "--link-dest") {
-			t.Errorf("unexpected %q on first snapshot", a)
-		}
+	if slices.ContainsFunc(argv, func(a string) bool { return strings.HasPrefix(a, "--link-dest") }) {
+		t.Errorf("unexpected --link-dest on first snapshot: %q", argv)
 	}
 
 	// .unfinished was renamed into a single prefixed snapshot holding rsync.log.
@@ -436,24 +426,19 @@ func TestRunSnapshotBackup_LinksAgainstLatest(t *testing.T) {
 	// mtimes contradict the names (as after rsync copies a source dir's
 	// mtime), and a non-snapshot directory is the most recently modified.
 	// The newest snapshot by name must still win.
-	mkdirWithMtime(t, filepath.Join(dest, "host_2025-06-17_12:00:00"), day(2025, time.June, 30))
-	mkdirWithMtime(t, filepath.Join(dest, "host_2025-06-18_12:00:00"), day(2020, time.January, 1))
+	older := snapshotDirName("host", day(2025, time.June, 17))
+	newer := snapshotDirName("host", day(2025, time.June, 18))
+	mkdirWithMtime(t, filepath.Join(dest, older), day(2025, time.June, 30))
+	mkdirWithMtime(t, filepath.Join(dest, newer), day(2020, time.January, 1))
 	mkdirWithMtime(t, filepath.Join(dest, "lost+found"), day(2026, time.January, 1))
 
 	rec := newExecRecorder(0)
-	app := &App{
-		config: &Config{
-			Destination:    dest,
-			SnapshotPrefix: "host",
-			Source:         []string{newSourceDir(t)},
-		},
-		execCmd: rec.command,
-	}
+	app := newSnapshotApp(dest, rec)
 	if err := app.runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
 	}
 
-	want := "--link-dest=" + filepath.Join(dest, "host_2025-06-18_12:00:00")
+	want := "--link-dest=" + filepath.Join(dest, newer)
 	if argv := rec.onlyCall(t); !slices.Contains(argv, want) {
 		t.Errorf("argv %q does not contain %q", argv, want)
 	}
@@ -461,14 +446,7 @@ func TestRunSnapshotBackup_LinksAgainstLatest(t *testing.T) {
 
 func TestRunSnapshotBackup_FailureLeavesNoSnapshot(t *testing.T) {
 	dest := t.TempDir()
-	app := &App{
-		config: &Config{
-			Destination:    dest,
-			SnapshotPrefix: "host",
-			Source:         []string{newSourceDir(t)},
-		},
-		execCmd: newExecRecorder(23).command,
-	}
+	app := newSnapshotApp(dest, newExecRecorder(23))
 	if err := app.runSnapshotBackup(); err == nil {
 		t.Fatal("runSnapshotBackup should have failed but didn't")
 	}
@@ -480,15 +458,8 @@ func TestRunSnapshotBackup_FailureLeavesNoSnapshot(t *testing.T) {
 func TestRunSnapshotBackup_DryRunTouchesNothing(t *testing.T) {
 	dest := t.TempDir()
 	rec := newExecRecorder(0)
-	app := &App{
-		config: &Config{
-			Destination:    dest,
-			SnapshotPrefix: "host",
-			Source:         []string{newSourceDir(t)},
-		},
-		dryRun:  true,
-		execCmd: rec.command,
-	}
+	app := newSnapshotApp(dest, rec)
+	app.dryRun = true
 	if err := app.runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
 	}
@@ -507,7 +478,7 @@ func TestRunSimpleBackup(t *testing.T) {
 		config: &Config{
 			Mode:        "simple",
 			Destination: dest,
-			Source:      []string{newSourceDir(t)},
+			Source:      []string{"/src"},
 		},
 		execCmd: rec.command,
 	}

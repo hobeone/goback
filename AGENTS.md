@@ -13,7 +13,7 @@ via `rsync --link-dest`, and old snapshots are pruned by a GFS
 - **Language**: Go — `go.mod` declares `go 1.25.0`.
 - **Runtime dependency**: `rsync` on `PATH`.
 - **Libraries**: `gopkg.in/yaml.v3` (config), `github.com/rs/zerolog` (logging). Nothing else.
-- **Layout**: everything lives in `package main`. `main.go` (~340 lines) holds all logic,
+- **Layout**: everything lives in `package main`. `main.go` holds all logic,
   `main_test.go` holds all tests. There are no subpackages.
 
 ## Commands
@@ -30,10 +30,10 @@ via `rsync --link-dest`, and old snapshots are pruned by a GFS
 `config.yaml` in the repo root is an **example** that points at `/mnt/backups`.
 Don't run the binary against it without `-dry-run` unless you mean it.
 
-### Current gate status (as of 2026-11-16)
+### Gate status
 
-All four gates (`go test`, `go vet`, `gofmt`, `golangci-lint`) are clean. Keep them
-that way. A new failure is yours.
+All four gates (`go test`, `go vet`, `gofmt`, `golangci-lint`) must stay clean. A new
+failure is yours.
 
 There is no CI workflow. `.github/` only has Dependabot (weekly `gomod`), so nothing
 enforces these gates. Run them by hand.
@@ -81,8 +81,8 @@ one `--exclude=…` per entry, the extra flags, sources, and dest. Specifically:
 ### Snapshot discovery (`getSnapshots`)
 
 A snapshot is a directory directly under `destination` whose name is exactly
-`<snapshot_prefix>_<2006-01-02_15:04:05>` (local time, `snapshotTimeLayout`), as
-checked by `parseSnapshotName`. Snapshots are ordered by the **timestamp in the name**,
+`<snapshot_prefix>_<2006-01-02_15:04:05>` (local time). `snapshotDirName` writes that
+format and `parseSnapshotName` reads it. Snapshots are ordered by the **timestamp in the name**,
 and purge buckets use that same time. Directory mtimes are never consulted. Invariants:
 
 1. **Anything else in `destination` is ignored.** That includes `lost+found`, other
@@ -95,9 +95,10 @@ and purge buckets use that same time. Directory mtimes are never consulted. Inva
    against or purged, and the next run is a full copy. This is deliberate: an
    unrecognized directory is left alone rather than deleted. Rename old snapshots by
    hand to migrate them.
-4. The snapshot name format is both written (`runSnapshotBackup`) and parsed
-   (`getSnapshots`). Change both together. `TestRunSnapshotBackup_CommitsSnapshot`
-   checks that what's written can be parsed back.
+4. The name format lives in `snapshotSep` and `snapshotTimeLayout`. Never build or
+   match snapshot names by hand; tests use `snapshotDirName` too.
+   `TestRunSnapshotBackup_CommitsSnapshot` checks that what's written can be parsed
+   back.
 
 ## Configuration
 
@@ -138,12 +139,15 @@ These were confirmed on 2026-11-16. Fix them deliberately, with tests. Don't
   building must update that table deliberately.
 - **Gaps**: the purge-error path (logged, not returned) and the `rsync.log` Close-error
   path are untested. Inducing either needs a filesystem seam that doesn't exist.
-- **Purge tests** create directories and set their mtimes with `os.Chtimes`. Use
-  **fixed dates** (the `day()` helper, which returns noon local time), never offsets from
-  `time.Now()`. Offsets make week and month bucketing depend on when the test runs.
-  Purge itself never reads the clock.
-- Use `t.TempDir()` for every temp path. The `writeConfig` and `newSourceDir` helpers
-  cover the common setup.
+- **Purge and discovery tests** name directories with
+  `snapshotDirName("host", day(...))`. Use **fixed dates** (`day()` returns noon local
+  time), never offsets from `time.Now()`, which make week and month bucketing depend on
+  when the test runs. Purge itself never reads the clock. Give fixture directories
+  mtimes that **contradict** their names (`mkdirWithMtime`), and add non-snapshot
+  decoys. That's what proves ordering and filtering come from the name.
+- Use `t.TempDir()` for every temp path. Helpers: `writeConfig` for config files,
+  `newSnapshotApp(dest, rec)` for snapshot-mode tests, `dirNames` for listing.
+  Source paths can be literals (`/src`), because the fake rsync never reads them.
 - New behavior needs a test. Before trusting a new test, confirm it fails without the
   fix.
 

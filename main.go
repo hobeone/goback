@@ -100,7 +100,7 @@ func (a *App) runSnapshotBackup() error {
 	log.Info().Strs("source", a.config.Source).Str("destination", a.config.Destination).Msg("starting snapshot backup")
 
 	unfinishedDir := filepath.Join(a.config.Destination, ".unfinished")
-	snapshotName := fmt.Sprintf("%s_%s", a.config.SnapshotPrefix, time.Now().Format(snapshotTimeLayout))
+	snapshotName := snapshotDirName(a.config.SnapshotPrefix, time.Now())
 	finalDest := filepath.Join(a.config.Destination, snapshotName)
 
 	if !a.dryRun {
@@ -225,9 +225,18 @@ func (a *App) runRsync(destDir string, linkDest string) (retErr error) {
 	return nil
 }
 
-// snapshotTimeLayout is the timestamp format embedded in snapshot names,
-// which have the form <prefix>_<timestamp> in local time.
-const snapshotTimeLayout = "2006-01-02_15:04:05"
+// Snapshot directories are named <prefix><snapshotSep><timestamp>, with the
+// timestamp in local time. snapshotDirName writes that format and
+// parseSnapshotName reads it.
+const (
+	snapshotSep        = "_"
+	snapshotTimeLayout = "2006-01-02_15:04:05"
+)
+
+// snapshotDirName returns the directory name for a snapshot taken at t.
+func snapshotDirName(prefix string, t time.Time) string {
+	return prefix + snapshotSep + t.Format(snapshotTimeLayout)
+}
 
 type snapshot struct {
 	name string
@@ -237,7 +246,7 @@ type snapshot struct {
 // parseSnapshotName reports whether name is a snapshot created with prefix
 // and, if so, the creation time encoded in it.
 func parseSnapshotName(name, prefix string) (time.Time, bool) {
-	stamp, ok := strings.CutPrefix(name, prefix+"_")
+	stamp, ok := strings.CutPrefix(name, prefix+snapshotSep)
 	if !ok {
 		return time.Time{}, false
 	}
@@ -267,6 +276,8 @@ func getSnapshots(dest, prefix string) ([]snapshot, error) {
 
 	var snapshots []snapshot
 	for _, entry := range entries {
+		// Dot directories (notably .unfinished) are never snapshots; skipping
+		// them here keeps them out of the "ignoring" log below.
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
