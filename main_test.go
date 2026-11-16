@@ -112,15 +112,22 @@ func TestParseSnapshotName(t *testing.T) {
 		want         time.Time
 		ok           bool
 	}{
-		{"host_2025-06-18_13:14:15", "host", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
-		{"_2025-06-18_13:14:15", "", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
-		{"my_host_2025-06-18_13:14:15", "my_host", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
-		{"my_host_2025-06-18_13:14:15", "my", time.Time{}, false}, // prefix must match exactly
-		{"other_2025-06-18_13:14:15", "host", time.Time{}, false},
+		// Current format.
+		{"host_2025-06-18_13-14-15", "host", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
+		{"_2025-06-18_13-14-15", "", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
+		{"my_host_2025-06-18_13-14-15", "my_host", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
+		{"my_host_2025-06-18_13-14-15", "my", time.Time{}, false}, // prefix must match exactly
+		{"other_2025-06-18_13-14-15", "host", time.Time{}, false},
 		{"host_2025-06-18", "host", time.Time{}, false},
-		{"host_2025-06-18_13:14:15.bak", "host", time.Time{}, false},
-		{"host-2025-06-18_13:14:15", "host", time.Time{}, false},
+		{"host_2025-06-18_13-14-15.bak", "host", time.Time{}, false},
+		{"host-2025-06-18_13-14-15", "host", time.Time{}, false},
 		{"lost+found", "host", time.Time{}, false},
+		// Legacy colon format, still recognised after upgrade.
+		{"host_2025-06-18_13:14:15", "host", time.Date(2025, 6, 18, 13, 14, 15, 0, time.Local), true},
+		{"my_host_2025-06-18_13:14:15", "my", time.Time{}, false},
+		{"host_2025-06-18_13:14:15.bak", "host", time.Time{}, false},
+		// A mix of the two is neither.
+		{"host_2025-06-18_13-14:15", "host", time.Time{}, false},
 	}
 	for _, tt := range tests {
 		got, ok := parseSnapshotName(tt.name, tt.prefix)
@@ -412,6 +419,9 @@ func TestRunSnapshotBackup_CommitsSnapshot(t *testing.T) {
 	if len(names) != 1 {
 		t.Fatalf("Expected one snapshot, got %q", names)
 	}
+	if strings.Contains(names[0], ":") {
+		t.Errorf("snapshot name %q contains ':', which SMB/exFAT/Windows reject", names[0])
+	}
 	// The name goback writes must be one it later recognises as a snapshot.
 	if _, ok := parseSnapshotName(names[0], "host"); !ok {
 		t.Errorf("created snapshot %q is not recognised by parseSnapshotName", names[0])
@@ -576,5 +586,57 @@ func TestPurgeBackups_SingleSlotKeepsNewest(t *testing.T) {
 				t.Errorf("Expected only %s to survive, got %q", newest, names)
 			}
 		})
+	}
+}
+
+// legacyDirName returns the pre-upgrade name, with ':' in the time.
+func legacyDirName(prefix string, t time.Time) string {
+	return prefix + snapshotSep + t.Format(legacySnapshotTimeLayout)
+}
+
+// After upgrading, the newest snapshot is still a legacy-named one, and the
+// first new-format run must hard-link against it.
+func TestRunSnapshotBackup_LinksAgainstLegacySnapshot(t *testing.T) {
+	dest := t.TempDir()
+	newest := legacyDirName("host", day(2025, time.June, 18))
+	mkdirWithMtime(t, filepath.Join(dest, legacyDirName("host", day(2025, time.June, 17))), day(2025, time.June, 17))
+	mkdirWithMtime(t, filepath.Join(dest, newest), day(2025, time.June, 18))
+
+	rec := newExecRecorder(0)
+	if err := newSnapshotApp(dest, rec).runSnapshotBackup(); err != nil {
+		t.Fatalf("runSnapshotBackup failed: %v", err)
+	}
+	want := "--link-dest=" + filepath.Join(dest, newest)
+	if argv := rec.onlyCall(t); !slices.Contains(argv, want) {
+		t.Errorf("argv %q does not contain %q", argv, want)
+	}
+}
+
+// Legacy and current names must order by their timestamps, not by name.
+// Within the same hour "12-30-00" sorts before "12:00:00" as a string
+// ('-' < ':'), so a name-based sort would put the 12:30 snapshot first.
+func TestGetSnapshots_OrdersMixedFormatsByTime(t *testing.T) {
+	dest := t.TempDir()
+	noon := day(2025, time.June, 17)
+	want := []string{
+		snapshotDirName("host", day(2025, time.June, 16)),
+		legacyDirName("host", noon),
+		snapshotDirName("host", noon.Add(30*time.Minute)),
+		legacyDirName("host", noon.Add(45*time.Minute)),
+	}
+	for _, name := range want {
+		mkdirWithMtime(t, filepath.Join(dest, name), day(2020, time.January, 1))
+	}
+
+	snapshots, err := getSnapshots(dest, "host")
+	if err != nil {
+		t.Fatalf("getSnapshots failed: %v", err)
+	}
+	var got []string
+	for _, s := range snapshots {
+		got = append(got, s.name)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("order mismatch\n got: %q\nwant: %q", got, want)
 	}
 }

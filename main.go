@@ -245,9 +245,15 @@ func (a *App) runRsync(destDir string, linkDest string) (retErr error) {
 // Snapshot directories are named <prefix><snapshotSep><timestamp>, with the
 // timestamp in local time. snapshotDirName writes that format and
 // parseSnapshotName reads it.
+//
+// The layout avoids ':', which SMB, exFAT and Windows filesystems reject.
+// Snapshots made before that change used legacySnapshotTimeLayout; they are
+// still recognised so upgrading neither orphans them (forcing a full copy
+// and leaving them unpurged) nor misorders them against new snapshots.
 const (
-	snapshotSep        = "_"
-	snapshotTimeLayout = "2006-01-02_15:04:05"
+	snapshotSep              = "_"
+	snapshotTimeLayout       = "2006-01-02_15-04-05"
+	legacySnapshotTimeLayout = "2006-01-02_15:04:05"
 )
 
 // snapshotDirName returns the directory name for a snapshot taken at t.
@@ -267,11 +273,12 @@ func parseSnapshotName(name, prefix string) (time.Time, bool) {
 	if !ok {
 		return time.Time{}, false
 	}
-	t, err := time.ParseInLocation(snapshotTimeLayout, stamp, time.Local)
-	if err != nil {
-		return time.Time{}, false
+	for _, layout := range []string{snapshotTimeLayout, legacySnapshotTimeLayout} {
+		if t, err := time.ParseInLocation(layout, stamp, time.Local); err == nil {
+			return t, true
+		}
 	}
-	return t, true
+	return time.Time{}, false
 }
 
 // getSnapshots returns the snapshots in dest, oldest first. Only directories

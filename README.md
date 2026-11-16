@@ -48,7 +48,7 @@ rsync_extra_flags: "--compress"
 ### Configuration Options
 
 -   `destination`: The directory where snapshots will be stored.
--   `snapshot_prefix`: A prefix for the snapshot directory names (e.g., `server_2025-10-18_13:14:20`). Only directories named `<snapshot_prefix>_<timestamp>` are treated as snapshots. Anything else in `destination` (such as `lost+found`) is never hard-linked against or purged. If you change the prefix, existing snapshots are no longer recognized: the next backup is a full copy, and the old snapshots are left in place.
+-   `snapshot_prefix`: A prefix for the snapshot directory names (e.g., `server_2025-10-18_13-14-20`). Snapshots created by older versions with colons in the time (`server_2025-10-18_13:14:20`) are still recognized. Only directories named `<snapshot_prefix>_<timestamp>` are treated as snapshots. Anything else in `destination` (such as `lost+found`) is never hard-linked against or purged. If you change the prefix, existing snapshots are no longer recognized: the next backup is a full copy, and the old snapshots are left in place.
 -   `source`: A list of files and directories to back up.
 -   `exclude`: A list of patterns to exclude from the backup. These are passed to `rsync`'s `--exclude` flag.
 -   `keep`: Specifies the number of snapshots to keep for each category. At least one count must be greater than 0, and none may be negative. GoBack refuses to run otherwise, because it would delete every snapshot.

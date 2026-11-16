@@ -51,7 +51,7 @@ enforces these gates. Run them by hand.
    - `getLatestSnapshot` → newest snapshot dir becomes `--link-dest`.
    - `runRsync` into `.unfinished`. Stdout goes to `.unfinished/rsync.log`; stderr goes
      to both the console and the log.
-   - `os.Rename(.unfinished, <dest>/<prefix>_<2006-01-02_15:04:05>)`. The rename is the
+   - `os.Rename(.unfinished, <dest>/<prefix>_<2006-01-02_15-04-05>)`. The rename is the
      commit point: a snapshot either exists in full or not at all.
 2. `purgeBackups` (runs only if the backup succeeded)
    - Walks snapshots **newest-first** in three passes: daily (the N newest), weekly (the
@@ -81,8 +81,10 @@ one `--exclude=…` per entry, the extra flags, sources, and dest. Specifically:
 ### Snapshot discovery (`getSnapshots`)
 
 A snapshot is a directory directly under `destination` whose name is exactly
-`<snapshot_prefix>_<2006-01-02_15:04:05>` (local time). `snapshotDirName` writes that
-format and `parseSnapshotName` reads it. Snapshots are ordered by the **timestamp in the name**,
+`<snapshot_prefix>_<2006-01-02_15-04-05>` (local time). `snapshotDirName` writes that
+format and `parseSnapshotName` reads it. `parseSnapshotName` also accepts the legacy
+`15:04:05` layout, because names with `:` break on SMB, exFAT and Windows. Without it,
+pre-upgrade snapshots would be orphaned. Snapshots are ordered by the **timestamp in the name**,
 and purge buckets use that same time. Directory mtimes are never consulted. Invariants:
 
 1. **Anything else in `destination` is ignored.** That includes `lost+found`, other
@@ -95,8 +97,12 @@ and purge buckets use that same time. Directory mtimes are never consulted. Inva
    against or purged, and the next run is a full copy. This is deliberate: an
    unrecognized directory is left alone rather than deleted. Rename old snapshots by
    hand to migrate them.
-4. The name format lives in `snapshotSep` and `snapshotTimeLayout`. Never build or
-   match snapshot names by hand; tests use `snapshotDirName` too.
+4. The name format lives in `snapshotSep` and `snapshotTimeLayout` (plus
+   `legacySnapshotTimeLayout`, which is parse-only). Never write `:` into a name again.
+   Never build or match snapshot names by hand; tests use `snapshotDirName` and
+   `legacyDirName`. Old and new names must be ordered by parsed time, never by string:
+   within one hour `12-30-00` sorts before `12:00:00`
+   (`TestGetSnapshots_OrdersMixedFormatsByTime`).
    `TestRunSnapshotBackup_CommitsSnapshot` checks that what's written can be parsed
    back.
 
@@ -113,16 +119,14 @@ and purge buckets use that same time. Directory mtimes are never consulted. Inva
 | `rsync_extra_flags` | Whitespace-split string |
 | `ignore_vanished_files_error` | Treat rsync exit 24 as success |
 
-Only `mode` and `keep` are validated. An empty `destination` or `source` still goes
-straight to rsync.
-
 ## Known issues and hazards
 
-These were confirmed on 2026-11-16. Fix them deliberately, with tests. Don't
-"tidy" around them.
+Fix these deliberately, with tests. Don't "tidy" around them.
 
-1. **Snapshot names contain `:`**, which won't work on SMB/exFAT/Windows-backed
-   destinations.
+1. **Only `mode` and `keep` are validated.** An empty `destination` or `source` goes
+   straight to rsync.
+2. **The legacy `:` layout can only be retired** once no destination still holds
+   snapshots that use it. Until then, removing it orphans them.
 
 ## Testing conventions
 
