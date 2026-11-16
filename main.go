@@ -338,4 +338,3 @@ func (a *App) purgeBackups() error {
 
 	return nil
 }
-

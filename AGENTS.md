@@ -30,14 +30,11 @@ via `rsync --link-dest`, and old snapshots are pruned by a GFS
 `config.yaml` in the repo root is an **example** that points at `/mnt/backups`.
 Don't run the binary against it without `-dry-run` unless you mean it.
 
-### Current gate status (as of 2026-11-16, master @ `6277fae`)
+### Current gate status (as of 2026-11-16)
 
-The gates are **not green on master**. Don't assume a failure is yours until you've
-checked whether it was already there:
-
-- `go test` — `TestPurgeBackups` fails depending on the date (see *Known issues*).
-- `gofmt -l .` — lists both files (`main_test.go` has space-indented helpers at the bottom).
-- `golangci-lint run` — 9 issues: 8 `errcheck` in tests, 1 `SA4006` in `TestHelperProcess`.
+`go test`, `go vet` and `gofmt` are clean. `golangci-lint run` reports one known
+issue: `errcheck` on `defer logFile.Close()` in `runRsync` (`main.go`). Closing a
+file that was written to can fail, so fix it properly rather than suppressing it.
 
 There is no CI workflow. `.github/` only has Dependabot (weekly `gomod`), so nothing
 enforces these gates. Run them by hand.
@@ -112,20 +109,14 @@ block, goes straight to rsync or purge.
 These were confirmed on 2026-11-16. Fix them deliberately, with tests. Don't
 "tidy" around them.
 
-1. **`TestPurgeBackups` depends on the date.** The fixture ages snapshots relative to
-   `time.Now()` and assumes that `now-15d` and `now-16d` fall in the same month (and that
-   specific offsets fall in the same ISO week). When they don't (e.g. on Mon 2026-11-16,
-   where Nov 1 and Oct 31 straddle a month boundary), the expected keep set is wrong.
-   Fix: use a fixed reference time. Purge would need an injectable clock, or the
-   test could use absolute dates.
-2. **mtime ordering can be corrupted by rsync.** With a trailing-slash source (`/data/`),
+1. **mtime ordering can be corrupted by rsync.** With a trailing-slash source (`/data/`),
    `rsync -a` copies the source directory's mtime onto `.unfinished`. The new snapshot
    can then look *older* than existing ones, which breaks both `--link-dest` selection
    and retention. Verified: `rsync -a src/ d1` gave `d1` the mtime of `src`. Parsing
    the timestamp from the snapshot name would be more robust.
-3. **Purge can delete things that aren't snapshots** (see *Snapshot discovery*).
-4. **An all-zero or missing `keep` block deletes everything.**
-5. **Snapshot names contain `:`**, which won't work on SMB/exFAT/Windows-backed destinations.
+2. **Purge can delete things that aren't snapshots** (see *Snapshot discovery*).
+3. **An all-zero or missing `keep` block deletes everything.**
+4. **Snapshot names contain `:`**, which won't work on SMB/exFAT/Windows-backed destinations.
 
 ## Testing conventions
 
@@ -139,7 +130,11 @@ These were confirmed on 2026-11-16. Fix them deliberately, with tests. Don't
   `--link-dest`); no test covers `App.Run` mode dispatch, the rename/commit step, the
   dry-run paths, or `getSnapshots` filtering.
 - **Purge tests** create directories and set their mtimes with `os.Chtimes`. Use
-  `t.TempDir()` in new tests instead of `os.MkdirTemp` with a manual `RemoveAll`.
+  **fixed dates** (the `day()` helper, which returns noon local time), never offsets from
+  `time.Now()`. Offsets make week and month bucketing depend on when the test runs.
+  Purge itself never reads the clock.
+- Use `t.TempDir()` for every temp path. The `writeConfig` and `newSourceDir` helpers
+  cover the common setup.
 - New behavior needs a test. Before trusting a new test, confirm it fails without the
   fix.
 

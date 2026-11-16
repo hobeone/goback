@@ -9,13 +9,14 @@ import (
 	"time"
 )
 
+// day returns noon local time on the given date. Noon keeps ISOWeek and
+// month bucketing stable regardless of time zone or DST shifts.
+func day(year int, month time.Month, d int) time.Time {
+	return time.Date(year, month, d, 12, 0, 0, 0, time.Local)
+}
+
 func TestPurgeBackups(t *testing.T) {
-	// Setup
-	tmpDir, err := os.MkdirTemp("", "goback-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	config := &Config{
 		Destination: tmpDir,
@@ -26,41 +27,42 @@ func TestPurgeBackups(t *testing.T) {
 		},
 	}
 
-	// Create snapshots with specific dates
-	// 2 daily, 2 weekly (from different weeks), 1 monthly, and some to be purged
-	now := time.Now()
-	ages := []int{
-		1, 2, // Daily
-		8, 9, // Week 2
-		15, 16, // Week 3
-		45, 46, // Month 2
-		75, 76, // Month 3
+	// Fixed dates, so the outcome cannot depend on when the test runs.
+	// ISO weeks in 2025: Jun 16-22 = W25, Jun 9-15 = W24, Jun 2-8 = W23,
+	// May 26-Jun 1 = W22.
+	snapshots := map[string]time.Time{
+		"2025-06-18": day(2025, time.June, 18),  // W25: daily
+		"2025-06-17": day(2025, time.June, 17),  // W25: daily
+		"2025-06-16": day(2025, time.June, 16),  // W25: bucket already claimed by a daily -> purge
+		"2025-06-11": day(2025, time.June, 11),  // W24: weekly
+		"2025-06-10": day(2025, time.June, 10),  // W24: purge
+		"2025-06-04": day(2025, time.June, 4),   // W23: weekly
+		"2025-06-03": day(2025, time.June, 3),   // W23: purge
+		"2025-05-28": day(2025, time.May, 28),   // weekly slots full; May is first unclaimed month -> monthly
+		"2025-05-27": day(2025, time.May, 27),   // May already claimed -> purge
+		"2025-04-15": day(2025, time.April, 15), // monthly slots full -> purge
 	}
-	for _, age := range ages {
-		name := fmt.Sprintf("snapshot-%d", age)
+	for name, modTime := range snapshots {
 		path := filepath.Join(tmpDir, name)
 		if err := os.Mkdir(path, 0755); err != nil {
 			t.Fatalf("Failed to create dir: %v", err)
 		}
-		modTime := now.AddDate(0, 0, -age)
 		if err := os.Chtimes(path, modTime, modTime); err != nil {
 			t.Fatalf("Failed to set mod time: %v", err)
 		}
 	}
 
-	// Execute
 	app := &App{config: config, dryRun: false}
 	if err := app.purgeBackups(); err != nil {
 		t.Fatalf("purgeBackups failed: %v", err)
 	}
 
-	// Verify
-	expected_to_keep := map[string]bool{
-		"snapshot-1":  true, // daily
-		"snapshot-2":  true, // daily
-		"snapshot-8":  true, // weekly
-		"snapshot-15": true, // weekly
-		"snapshot-45": true, // monthly
+	expectedToKeep := map[string]bool{
+		"2025-06-18": true, // daily
+		"2025-06-17": true, // daily
+		"2025-06-11": true, // weekly
+		"2025-06-04": true, // weekly
+		"2025-05-28": true, // monthly
 	}
 
 	files, err := os.ReadDir(tmpDir)
@@ -68,30 +70,39 @@ func TestPurgeBackups(t *testing.T) {
 		t.Fatalf("Failed to read dir: %v", err)
 	}
 
-	found_map := make(map[string]bool)
+	found := make(map[string]bool)
 	for _, f := range files {
-		found_map[f.Name()] = true
+		found[f.Name()] = true
 	}
 
-	if len(found_map) != len(expected_to_keep) {
-		t.Errorf("Expected %d files, but found %d", len(expected_to_keep), len(found_map))
+	if len(found) != len(expectedToKeep) {
+		t.Errorf("Expected %d snapshots, but found %d", len(expectedToKeep), len(found))
 	}
-
-	for name := range expected_to_keep {
-		if !found_map[name] {
+	for name := range expectedToKeep {
+		if !found[name] {
 			t.Errorf("Expected to find snapshot %s, but it was deleted", name)
 		}
 	}
-	for name := range found_map {
-		if !expected_to_keep[name] {
+	for name := range found {
+		if !expectedToKeep[name] {
 			t.Errorf("Expected snapshot %s to be deleted, but it was kept", name)
 		}
 	}
 }
 
+// writeConfig writes content to a config file in a per-test temp dir and
+// returns its path.
+func writeConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+	return path
+}
+
 func TestReadConfig(t *testing.T) {
-	// Setup
-	configFileContent := `
+	path := writeConfig(t, `
 destination: /tmp/backup
 snapshot_prefix: test
 source:
@@ -104,25 +115,13 @@ keep:
   monthly: 1
 rsync_extra_flags: "--verbose"
 ignore_vanished_files_error: true
-`
-	tmpFile, err := os.CreateTemp("", "config-*.yaml")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
+`)
 
-	if _, err := tmpFile.WriteString(configFileContent); err != nil {
-		t.Fatalf("Failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	// Execute
-	config, err := readConfig(tmpFile.Name())
+	config, err := readConfig(path)
 	if err != nil {
 		t.Fatalf("readConfig failed: %v", err)
 	}
 
-	// Verify
 	if config.Destination != "/tmp/backup" {
 		t.Errorf("Expected destination '/tmp/backup', got '%s'", config.Destination)
 	}
@@ -144,31 +143,18 @@ ignore_vanished_files_error: true
 }
 
 func TestReadConfig_SimpleMode(t *testing.T) {
-	// Setup
-	configFileContent := `
+	path := writeConfig(t, `
 mode: simple
 destination: /tmp/backup
 source:
   - /tmp/source1
-`
-	tmpFile, err := os.CreateTemp("", "config-*.yaml")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
+`)
 
-	if _, err := tmpFile.WriteString(configFileContent); err != nil {
-		t.Fatalf("Failed to write to temp file: %v", err)
-	}
-	tmpFile.Close()
-
-	// Execute
-	config, err := readConfig(tmpFile.Name())
+	config, err := readConfig(path)
 	if err != nil {
 		t.Fatalf("readConfig failed: %v", err)
 	}
 
-	// Verify
 	if config.Mode != "simple" {
 		t.Errorf("Expected mode 'simple', got '%s'", config.Mode)
 	}
@@ -184,130 +170,88 @@ func TestReadConfig_NotFound(t *testing.T) {
 	}
 }
 
-func TestRunSnapshotBackupIgnoreVanishedFilesError(t *testing.T) {
-	// Setup
-	tmpDir, err := os.MkdirTemp("", "goback-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	sourceDir, err := os.MkdirTemp("", "goback-source")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(sourceDir)
-
-	// Create a file in the source directory
-	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
+// newSourceDir creates a temp source directory containing one file.
+func newSourceDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "testfile"), []byte("test"), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
+	return dir
+}
 
+func TestRunSnapshotBackupIgnoreVanishedFilesError(t *testing.T) {
 	config := &Config{
-		Destination:              tmpDir,
+		Destination:              t.TempDir(),
 		SnapshotPrefix:           "test",
-		Source:                   []string{sourceDir},
+		Source:                   []string{newSourceDir(t)},
 		IgnoreVanishedFilesError: true,
 	}
 
 	app := &App{config: config, dryRun: false, execCmd: mockExecCommand}
-	err = app.runSnapshotBackup()
-	if err != nil {
+	if err := app.runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
 	}
 }
 
 func TestRunSnapshotBackupIgnoreVanishedFilesError_False(t *testing.T) {
-	// Setup
-	tmpDir, err := os.MkdirTemp("", "goback-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	sourceDir, err := os.MkdirTemp("", "goback-source")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(sourceDir)
-
-	// Create a file in the source directory
-	if err := os.WriteFile(filepath.Join(sourceDir, "testfile"), []byte("test"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-
 	config := &Config{
-		Destination:              tmpDir,
+		Destination:              t.TempDir(),
 		SnapshotPrefix:           "test",
-		Source:                   []string{sourceDir},
+		Source:                   []string{newSourceDir(t)},
 		IgnoreVanishedFilesError: false,
 	}
 
 	app := &App{config: config, dryRun: false, execCmd: mockExecCommand}
-	err = app.runSnapshotBackup()
-	if err == nil {
+	if err := app.runSnapshotBackup(); err == nil {
 		t.Fatal("runSnapshotBackup should have failed but didn't")
 	}
 }
 
 func TestRunSimpleBackup(t *testing.T) {
-	// Setup
-	tmpDir, err := os.MkdirTemp("", "goback-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	sourceDir, err := os.MkdirTemp("", "goback-source")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(sourceDir)
-
 	config := &Config{
 		Mode:                     "simple",
-		Destination:              tmpDir,
-		Source:                   []string{sourceDir},
+		Destination:              t.TempDir(),
+		Source:                   []string{t.TempDir()},
 		IgnoreVanishedFilesError: true,
 	}
 
 	app := &App{config: config, dryRun: false, execCmd: mockExecCommand}
-	err = app.runSimpleBackup()
-	if err != nil {
+	if err := app.runSimpleBackup(); err != nil {
 		t.Fatalf("runSimpleBackup failed: %v", err)
 	}
 }
-    
-    func mockExecCommand(command string, args ...string) *exec.Cmd {
-    	cs := []string{"-test.run=TestHelperProcess", "--", command}
-    	cs = append(cs, args...)
-    	cmd := exec.Command(os.Args[0], cs...)
-    	cmd.Env = []string{"GO_WANT_HELPER_PROCESS=1"}
-    	return cmd
-    }
-        
-    func TestHelperProcess(t *testing.T) {
-    	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
-    		return
-    	}
-    	// Check the command line arguments to see which command we're supposed to be.
-    	args := os.Args
-    	for len(args) > 0 {
-    		if args[0] == "--" {
-    			args = args[1:]
-    			break
-    		}
-    		args = args[1:]
-    	}
-    	if len(args) == 0 {
-    		fmt.Fprintf(os.Stderr, "No command\n")
-    		os.Exit(2)
-    	}
-    
-    	cmd, args := args[0], args[1:]
-    	if cmd == "rsync" {
-    		// Simulate rsync exiting with code 24
-    		os.Exit(24)
-    	}
-    }
-    
+
+// mockExecCommand re-executes the test binary as TestHelperProcess, which
+// stands in for the real command.
+func mockExecCommand(command string, args ...string) *exec.Cmd {
+	cs := []string{"-test.run=TestHelperProcess", "--", command}
+	cs = append(cs, args...)
+	cmd := exec.Command(os.Args[0], cs...)
+	cmd.Env = []string{"GO_WANT_HELPER_PROCESS=1"}
+	return cmd
+}
+
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	// Skip past the "--" separator to find the command we're standing in for.
+	args := os.Args
+	for len(args) > 0 {
+		if args[0] == "--" {
+			args = args[1:]
+			break
+		}
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "No command\n")
+		os.Exit(2)
+	}
+
+	if args[0] == "rsync" {
+		// Simulate rsync exiting with code 24 (vanished files).
+		os.Exit(24)
+	}
+}
