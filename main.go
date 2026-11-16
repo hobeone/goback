@@ -34,6 +34,20 @@ type Keep struct {
 	Monthly int `yaml:"monthly"`
 }
 
+// validate rejects retention settings that would make purge delete every
+// snapshot, including the one just taken. With any count above zero the
+// newest snapshot always survives, since it claims its own day, week and
+// month.
+func (k Keep) validate() error {
+	if k.Daily < 0 || k.Weekly < 0 || k.Monthly < 0 {
+		return fmt.Errorf("keep counts must not be negative (daily=%d weekly=%d monthly=%d)", k.Daily, k.Weekly, k.Monthly)
+	}
+	if k.Daily == 0 && k.Weekly == 0 && k.Monthly == 0 {
+		return errors.New("keep: at least one of daily, weekly or monthly must be greater than 0, otherwise every snapshot would be purged")
+	}
+	return nil
+}
+
 type App struct {
 	config  *Config
 	dryRun  bool
@@ -66,6 +80,9 @@ func main() {
 func (a *App) Run() error {
 	switch a.config.Mode {
 	case "", "snapshot":
+		if err := a.config.Keep.validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
 		if err := a.runSnapshotBackup(); err != nil {
 			return fmt.Errorf("snapshot backup failed: %w", err)
 		}

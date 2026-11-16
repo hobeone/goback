@@ -109,21 +109,19 @@ and purge buckets use that same time. Directory mtimes are never consulted. Inva
 | `snapshot_prefix` | Identifies which directories are snapshots; see *Snapshot discovery* |
 | `source` | List of paths passed to rsync as given (trailing slashes matter to rsync) |
 | `exclude` | Each entry becomes `--exclude=<entry>` |
-| `keep.daily/weekly/monthly` | Ints; **all zero means purge deletes every snapshot**, including the one just made |
+| `keep.daily/weekly/monthly` | Non-negative ints, at least one > 0 in snapshot mode (`Keep.validate`, checked in `Run` before anything runs). All zero would purge every snapshot, including the new one |
 | `rsync_extra_flags` | Whitespace-split string |
 | `ignore_vanished_files_error` | Treat rsync exit 24 as success |
 
-Config is never validated: an empty `destination` or `source`, or a missing `keep`
-block, goes straight to rsync or purge.
+Only `mode` and `keep` are validated. An empty `destination` or `source` still goes
+straight to rsync.
 
 ## Known issues and hazards
 
 These were confirmed on 2026-11-16. Fix them deliberately, with tests. Don't
 "tidy" around them.
 
-1. **An all-zero or missing `keep` block deletes every snapshot** of the configured
-   prefix, including the one just made.
-2. **Snapshot names contain `:`**, which won't work on SMB/exFAT/Windows-backed
+1. **Snapshot names contain `:`**, which won't work on SMB/exFAT/Windows-backed
    destinations.
 
 ## Testing conventions

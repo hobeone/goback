@@ -509,3 +509,72 @@ func TestRun_InvalidMode(t *testing.T) {
 		t.Errorf("rsync ran despite invalid mode: %q", rec.calls)
 	}
 }
+
+func TestRun_RejectsKeepThatPurgesEverything(t *testing.T) {
+	tests := []struct {
+		name string
+		keep Keep
+	}{
+		{"missing keep block", Keep{}},
+		{"all zero", Keep{Daily: 0, Weekly: 0, Monthly: 0}},
+		{"negative daily", Keep{Daily: -1, Weekly: 4}},
+		{"negative monthly", Keep{Daily: 7, Monthly: -2}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dest := t.TempDir()
+			existing := snapshotDirName("host", day(2025, time.June, 18))
+			mkdirWithMtime(t, filepath.Join(dest, existing), day(2025, time.June, 18))
+
+			rec := newExecRecorder(0)
+			app := newSnapshotApp(dest, rec)
+			app.config.Keep = tt.keep
+			if err := app.Run(); err == nil {
+				t.Fatal("Run should reject this keep config")
+			}
+			if len(rec.calls) != 0 {
+				t.Errorf("rsync ran despite invalid keep: %q", rec.calls)
+			}
+			if names := dirNames(t, dest); !slices.Equal(names, []string{existing}) {
+				t.Errorf("destination changed despite invalid keep: %q", names)
+			}
+		})
+	}
+}
+
+func TestRun_AcceptsKeepWithOneNonZeroCount(t *testing.T) {
+	for _, keep := range []Keep{{Daily: 1}, {Weekly: 1}, {Monthly: 1}} {
+		t.Run(fmt.Sprintf("%+v", keep), func(t *testing.T) {
+			rec := newExecRecorder(0)
+			app := newSnapshotApp(t.TempDir(), rec)
+			app.config.Keep = keep
+			if err := app.Run(); err != nil {
+				t.Fatalf("Run failed: %v", err)
+			}
+			if len(rec.calls) != 1 {
+				t.Errorf("Expected rsync to run once, got %q", rec.calls)
+			}
+		})
+	}
+}
+
+// Validation relies on any single non-zero count keeping the newest
+// snapshot; pin that for the weekly-only and monthly-only cases.
+func TestPurgeBackups_SingleSlotKeepsNewest(t *testing.T) {
+	for _, keep := range []Keep{{Weekly: 1}, {Monthly: 1}} {
+		t.Run(fmt.Sprintf("%+v", keep), func(t *testing.T) {
+			dest := t.TempDir()
+			newest := snapshotDirName("host", day(2025, time.June, 18))
+			mkdirWithMtime(t, filepath.Join(dest, newest), day(2025, time.June, 18))
+			mkdirWithMtime(t, filepath.Join(dest, snapshotDirName("host", day(2025, time.June, 17))), day(2025, time.June, 17))
+
+			app := &App{config: &Config{Destination: dest, SnapshotPrefix: "host", Keep: keep}}
+			if err := app.purgeBackups(); err != nil {
+				t.Fatalf("purgeBackups failed: %v", err)
+			}
+			if names := dirNames(t, dest); !slices.Equal(names, []string{newest}) {
+				t.Errorf("Expected only %s to survive, got %q", newest, names)
+			}
+		})
+	}
+}

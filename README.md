@@ -51,7 +51,7 @@ rsync_extra_flags: "--compress"
 -   `snapshot_prefix`: A prefix for the snapshot directory names (e.g., `server_2025-10-18_13:14:20`). Only directories named `<snapshot_prefix>_<timestamp>` are treated as snapshots. Anything else in `destination` (such as `lost+found`) is never hard-linked against or purged. If you change the prefix, existing snapshots are no longer recognized: the next backup is a full copy, and the old snapshots are left in place.
 -   `source`: A list of files and directories to back up.
 -   `exclude`: A list of patterns to exclude from the backup. These are passed to `rsync`'s `--exclude` flag.
--   `keep`: Specifies the number of snapshots to keep for each category.
+-   `keep`: Specifies the number of snapshots to keep for each category. At least one count must be greater than 0, and none may be negative. GoBack refuses to run otherwise, because it would delete every snapshot.
     -   `daily`: Number of the most recent daily backups to keep.
     -   `weekly`: Number of the most recent weekly backups to keep (keeps the newest snapshot from each week).
     -   `monthly`: Number of the most recent monthly backups to keep (keeps the newest snapshot from each month).
