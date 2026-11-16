@@ -382,15 +382,18 @@ func dirNames(t *testing.T, dir string) []string {
 	return names
 }
 
-// newSnapshotApp returns a snapshot-mode App backing up to dest with prefix
-// "host", with rsync replaced by rec. The source path is never read, since
-// rsync is faked.
-func newSnapshotApp(dest string, rec *execRecorder) *App {
+// newSnapshotApp returns a valid snapshot-mode App backing up to dest with
+// prefix "host" and keep.daily 1, with rsync replaced by rec. The source is
+// an empty temp dir: it must exist to pass validation, but the fake rsync
+// never reads it.
+func newSnapshotApp(t *testing.T, dest string, rec *execRecorder) *App {
+	t.Helper()
 	return &App{
 		config: &Config{
 			Destination:    dest,
 			SnapshotPrefix: "host",
-			Source:         []string{"/src"},
+			Source:         []string{t.TempDir()},
+			Keep:           Keep{Daily: 1},
 		},
 		execCmd: rec.command,
 	}
@@ -399,7 +402,7 @@ func newSnapshotApp(dest string, rec *execRecorder) *App {
 func TestRunSnapshotBackup_CommitsSnapshot(t *testing.T) {
 	dest := t.TempDir()
 	rec := newExecRecorder(0)
-	app := newSnapshotApp(dest, rec)
+	app := newSnapshotApp(t, dest, rec)
 
 	if err := app.runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
@@ -443,7 +446,7 @@ func TestRunSnapshotBackup_LinksAgainstLatest(t *testing.T) {
 	mkdirWithMtime(t, filepath.Join(dest, "lost+found"), day(2026, time.January, 1))
 
 	rec := newExecRecorder(0)
-	app := newSnapshotApp(dest, rec)
+	app := newSnapshotApp(t, dest, rec)
 	if err := app.runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
 	}
@@ -456,7 +459,7 @@ func TestRunSnapshotBackup_LinksAgainstLatest(t *testing.T) {
 
 func TestRunSnapshotBackup_FailureLeavesNoSnapshot(t *testing.T) {
 	dest := t.TempDir()
-	app := newSnapshotApp(dest, newExecRecorder(23))
+	app := newSnapshotApp(t, dest, newExecRecorder(23))
 	if err := app.runSnapshotBackup(); err == nil {
 		t.Fatal("runSnapshotBackup should have failed but didn't")
 	}
@@ -468,7 +471,7 @@ func TestRunSnapshotBackup_FailureLeavesNoSnapshot(t *testing.T) {
 func TestRunSnapshotBackup_DryRunTouchesNothing(t *testing.T) {
 	dest := t.TempDir()
 	rec := newExecRecorder(0)
-	app := newSnapshotApp(dest, rec)
+	app := newSnapshotApp(t, dest, rec)
 	app.dryRun = true
 	if err := app.runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
@@ -488,7 +491,7 @@ func TestRunSimpleBackup(t *testing.T) {
 		config: &Config{
 			Mode:        "simple",
 			Destination: dest,
-			Source:      []string{"/src"},
+			Source:      []string{t.TempDir()},
 		},
 		execCmd: rec.command,
 	}
@@ -512,8 +515,8 @@ func TestRunSimpleBackup(t *testing.T) {
 func TestRun_InvalidMode(t *testing.T) {
 	rec := newExecRecorder(0)
 	app := &App{config: &Config{Mode: "bogus"}, execCmd: rec.command}
-	if err := app.Run(); err == nil {
-		t.Fatal("Run should reject an unknown mode")
+	if err := app.Run(); err == nil || !strings.Contains(err.Error(), "invalid backup mode") {
+		t.Fatalf("Run should reject an unknown mode, got %v", err)
 	}
 	if len(rec.calls) != 0 {
 		t.Errorf("rsync ran despite invalid mode: %q", rec.calls)
@@ -537,10 +540,10 @@ func TestRun_RejectsKeepThatPurgesEverything(t *testing.T) {
 			mkdirWithMtime(t, filepath.Join(dest, existing), day(2025, time.June, 18))
 
 			rec := newExecRecorder(0)
-			app := newSnapshotApp(dest, rec)
+			app := newSnapshotApp(t, dest, rec)
 			app.config.Keep = tt.keep
-			if err := app.Run(); err == nil {
-				t.Fatal("Run should reject this keep config")
+			if err := app.Run(); err == nil || !strings.Contains(err.Error(), "keep") {
+				t.Fatalf("Run should reject this keep config, got %v", err)
 			}
 			if len(rec.calls) != 0 {
 				t.Errorf("rsync ran despite invalid keep: %q", rec.calls)
@@ -556,7 +559,7 @@ func TestRun_AcceptsKeepWithOneNonZeroCount(t *testing.T) {
 	for _, keep := range []Keep{{Daily: 1}, {Weekly: 1}, {Monthly: 1}} {
 		t.Run(fmt.Sprintf("%+v", keep), func(t *testing.T) {
 			rec := newExecRecorder(0)
-			app := newSnapshotApp(t.TempDir(), rec)
+			app := newSnapshotApp(t, t.TempDir(), rec)
 			app.config.Keep = keep
 			if err := app.Run(); err != nil {
 				t.Fatalf("Run failed: %v", err)
@@ -603,7 +606,7 @@ func TestRunSnapshotBackup_LinksAgainstLegacySnapshot(t *testing.T) {
 	mkdirWithMtime(t, filepath.Join(dest, newest), day(2025, time.June, 18))
 
 	rec := newExecRecorder(0)
-	if err := newSnapshotApp(dest, rec).runSnapshotBackup(); err != nil {
+	if err := newSnapshotApp(t, dest, rec).runSnapshotBackup(); err != nil {
 		t.Fatalf("runSnapshotBackup failed: %v", err)
 	}
 	want := "--link-dest=" + filepath.Join(dest, newest)
@@ -638,5 +641,193 @@ func TestGetSnapshots_OrdersMixedFormatsByTime(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("order mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	tests := []struct {
+		name string
+		// edit adjusts a valid snapshot-mode config whose destination and
+		// single source are separate existing temp dirs under root.
+		edit func(t *testing.T, root string, c *Config)
+		// wantErrs are substrings the error must contain; none means valid.
+		wantErrs []string
+	}{
+		{name: "valid snapshot config", edit: func(*testing.T, string, *Config) {}},
+		{
+			name:     "empty destination",
+			edit:     func(_ *testing.T, _ string, c *Config) { c.Destination = "" },
+			wantErrs: []string{"destination must be set"},
+		},
+		{
+			name:     "snapshot destination missing",
+			edit:     func(_ *testing.T, root string, c *Config) { c.Destination = filepath.Join(root, "unmounted") },
+			wantErrs: []string{"must already exist"},
+		},
+		{
+			name: "snapshot destination is a file",
+			edit: func(t *testing.T, root string, c *Config) {
+				c.Destination = filepath.Join(root, "file")
+				if err := os.WriteFile(c.Destination, nil, 0644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErrs: []string{"is not a directory"},
+		},
+		{
+			name: "simple mode may create its destination",
+			edit: func(_ *testing.T, root string, c *Config) {
+				c.Mode = "simple"
+				c.Destination = filepath.Join(root, "new", "dir")
+			},
+		},
+		{
+			name:     "no sources",
+			edit:     func(_ *testing.T, _ string, c *Config) { c.Source = nil },
+			wantErrs: []string{"at least one path"},
+		},
+		{
+			name:     "blank source",
+			edit:     func(_ *testing.T, _ string, c *Config) { c.Source = append(c.Source, "  ") },
+			wantErrs: []string{"source[1] is empty"},
+		},
+		{
+			name:     "missing source",
+			edit:     func(_ *testing.T, root string, c *Config) { c.Source = append(c.Source, filepath.Join(root, "gone")) },
+			wantErrs: []string{"gone"},
+		},
+		{
+			name:     "destination equals source",
+			edit:     func(_ *testing.T, _ string, c *Config) { c.Destination = c.Source[0] },
+			wantErrs: []string{"inside source"},
+		},
+		{
+			name: "destination under source",
+			edit: func(t *testing.T, _ string, c *Config) {
+				c.Destination = filepath.Join(c.Source[0], "backups")
+				mustMkdir(t, c.Destination)
+			},
+			wantErrs: []string{"inside source"},
+		},
+		{
+			name: "destination under source via ..",
+			edit: func(t *testing.T, _ string, c *Config) {
+				mustMkdir(t, filepath.Join(c.Source[0], "backups"))
+				c.Destination = c.Source[0] + "/../" + filepath.Base(c.Source[0]) + "/backups"
+			},
+			wantErrs: []string{"inside source"},
+		},
+		{
+			name: "destination under symlinked source",
+			edit: func(t *testing.T, root string, c *Config) {
+				link := filepath.Join(root, "link")
+				if err := os.Symlink(c.Source[0], link); err != nil {
+					t.Fatal(err)
+				}
+				c.Destination = filepath.Join(c.Source[0], "backups")
+				mustMkdir(t, c.Destination)
+				c.Source = []string{link + "/"}
+			},
+			wantErrs: []string{"inside source"},
+		},
+		{
+			name: "simple mode destination not yet created under source",
+			edit: func(_ *testing.T, _ string, c *Config) {
+				c.Mode = "simple"
+				c.Destination = filepath.Join(c.Source[0], "a", "b")
+			},
+			wantErrs: []string{"inside source"},
+		},
+		{
+			// The destination does not exist and is reached through a
+			// symlink, so only resolving its nearest existing parent shows
+			// that it lands inside the source.
+			name: "uncreated destination under a symlink to the source",
+			edit: func(t *testing.T, root string, c *Config) {
+				link := filepath.Join(root, "link")
+				if err := os.Symlink(c.Source[0], link); err != nil {
+					t.Fatal(err)
+				}
+				c.Mode = "simple"
+				c.Destination = filepath.Join(link, "a", "b")
+			},
+			wantErrs: []string{"inside source"},
+		},
+		{
+			name: "sibling sharing a name prefix is not inside",
+			edit: func(t *testing.T, _ string, c *Config) {
+				c.Destination = c.Source[0] + "-backups"
+				mustMkdir(t, c.Destination)
+			},
+		},
+		{
+			name: "source inside destination is allowed",
+			edit: func(t *testing.T, _ string, c *Config) {
+				src := filepath.Join(c.Destination, "data")
+				mustMkdir(t, src)
+				c.Source = []string{src}
+			},
+		},
+		{
+			name: "every problem is reported at once",
+			edit: func(_ *testing.T, _ string, c *Config) {
+				c.Destination = ""
+				c.Source = nil
+				c.Keep = Keep{}
+			},
+			wantErrs: []string{"destination must be set", "at least one path", "keep"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			c := &Config{
+				Destination: filepath.Join(root, "dest"),
+				Source:      []string{filepath.Join(root, "src")},
+				Keep:        Keep{Daily: 1},
+			}
+			mustMkdir(t, c.Destination)
+			mustMkdir(t, c.Source[0])
+			tt.edit(t, root, c)
+
+			err := c.validate()
+			if len(tt.wantErrs) == 0 {
+				if err != nil {
+					t.Fatalf("validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validate() = nil, want errors containing %q", tt.wantErrs)
+			}
+			for _, want := range tt.wantErrs {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("validate() = %q, missing %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRun_InvalidConfigTouchesNothing(t *testing.T) {
+	root := t.TempDir()
+	rec := newExecRecorder(0)
+	app := newSnapshotApp(t, filepath.Join(root, "unmounted"), rec)
+	if err := app.Run(); err == nil {
+		t.Fatal("Run should fail when the destination is missing")
+	}
+	if len(rec.calls) != 0 {
+		t.Errorf("rsync ran despite invalid config: %q", rec.calls)
+	}
+	if names := dirNames(t, root); len(names) != 0 {
+		t.Errorf("Run created %q despite invalid config", names)
+	}
+}
+
+func mustMkdir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
 	}
 }

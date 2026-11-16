@@ -48,6 +48,91 @@ func (k Keep) validate() error {
 	return nil
 }
 
+// validate checks everything Run relies on before anything touches disk,
+// reporting every problem at once.
+func (c *Config) validate() error {
+	var errs []error
+
+	snapshotMode := false
+	switch c.Mode {
+	case "", "snapshot":
+		snapshotMode = true
+		if err := c.Keep.validate(); err != nil {
+			errs = append(errs, err)
+		}
+	case "simple":
+	default:
+		errs = append(errs, fmt.Errorf("invalid backup mode: %q", c.Mode))
+	}
+
+	if c.Destination == "" {
+		errs = append(errs, errors.New("destination must be set"))
+	} else if snapshotMode {
+		// Never create the destination in snapshot mode: if a backup drive
+		// is not mounted, its mount point is an empty directory (or missing)
+		// on the root filesystem, and backing up there can fill it.
+		info, err := os.Stat(c.Destination)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("destination %q must already exist (is the backup drive mounted?): %w", c.Destination, err))
+		case !info.IsDir():
+			errs = append(errs, fmt.Errorf("destination %q is not a directory", c.Destination))
+		}
+	}
+
+	if len(c.Source) == 0 {
+		errs = append(errs, errors.New("source must list at least one path"))
+	}
+	for i, src := range c.Source {
+		if strings.TrimSpace(src) == "" {
+			errs = append(errs, fmt.Errorf("source[%d] is empty", i))
+			continue
+		}
+		if _, err := os.Stat(src); err != nil {
+			errs = append(errs, fmt.Errorf("source %q: %w", src, err))
+			continue
+		}
+		if c.Destination != "" && isWithin(c.Destination, src) {
+			errs = append(errs, fmt.Errorf("destination %q is inside source %q, so every backup would include all previous ones", c.Destination, src))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// isWithin reports whether path is dir or lies underneath it. Both are made
+// absolute and have symlinks resolved where they exist, so "..", relative
+// paths and symlinked sources cannot hide the overlap.
+func isWithin(path, dir string) bool {
+	rel, err := filepath.Rel(resolvePath(dir), resolvePath(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// resolvePath returns p as an absolute path with symlinks evaluated. For a
+// path that does not exist yet it resolves the nearest existing parent, so a
+// not-yet-created directory under a symlink still compares correctly.
+func resolvePath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	var missing []string
+	for {
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			return filepath.Join(append([]string{real}, missing...)...)
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return filepath.Join(append([]string{abs}, missing...)...)
+		}
+		missing = append([]string{filepath.Base(abs)}, missing...)
+		abs = parent
+	}
+}
+
 type App struct {
 	config  *Config
 	dryRun  bool
@@ -78,11 +163,11 @@ func main() {
 }
 
 func (a *App) Run() error {
+	if err := a.config.validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 	switch a.config.Mode {
 	case "", "snapshot":
-		if err := a.config.Keep.validate(); err != nil {
-			return fmt.Errorf("invalid config: %w", err)
-		}
 		if err := a.runSnapshotBackup(); err != nil {
 			return fmt.Errorf("snapshot backup failed: %w", err)
 		}

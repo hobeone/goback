@@ -41,7 +41,8 @@ enforces these gates. Run them by hand.
 ## Architecture
 
 `main()` parses flags, sets up a zerolog `ConsoleWriter`, reads config, and builds an
-`App{config, dryRun, execCmd}`. `App.Run()` dispatches on `config.Mode`:
+`App{config, dryRun, execCmd}`. `App.Run()` first calls `Config.validate()` (see
+*Configuration*), then dispatches on `config.Mode`:
 
 ### Snapshot mode (`mode: snapshot` or unset)
 
@@ -111,21 +112,37 @@ and purge buckets use that same time. Directory mtimes are never consulted. Inva
 | Key | Notes |
 |---|---|
 | `mode` | `snapshot` (default when empty) or `simple`; anything else is an error |
-| `destination` | Root for snapshots (snapshot mode) or the sync target (simple mode) |
+| `destination` | Required. Root for snapshots (snapshot mode) or the sync target (simple mode). In snapshot mode it **must already exist**; simple mode creates it |
 | `snapshot_prefix` | Identifies which directories are snapshots; see *Snapshot discovery* |
-| `source` | List of paths passed to rsync as given (trailing slashes matter to rsync) |
+| `source` | Required, non-empty, no blank entries, and every path must exist. Passed to rsync as given (trailing slashes matter to rsync). `destination` must not be inside any source |
 | `exclude` | Each entry becomes `--exclude=<entry>` |
-| `keep.daily/weekly/monthly` | Non-negative ints, at least one > 0 in snapshot mode (`Keep.validate`, checked in `Run` before anything runs). All zero would purge every snapshot, including the new one |
+| `keep.daily/weekly/monthly` | Snapshot mode: non-negative, at least one > 0. All zero would purge every snapshot, including the new one |
 | `rsync_extra_flags` | Whitespace-split string |
 | `ignore_vanished_files_error` | Treat rsync exit 24 as success |
+
+### Validation (`Config.validate`)
+
+`Run` validates before anything touches disk, and `errors.Join` reports every
+problem at once. Why the less obvious rules exist:
+
+- **Snapshot destinations are never created.** When a backup drive isn't mounted, its
+  mount point is empty or missing on the root filesystem, and a backup there can fill
+  the disk. Simple mode keeps `MkdirAll`.
+- **Destination inside a source** would copy every previous backup into the next one.
+  This is rejected even when an `exclude` would cover it. `isWithin` and `resolvePath`
+  make both paths absolute and resolve symlinks, including the nearest existing parent
+  of a destination that doesn't exist yet, so `..`, relative paths and symlinks can't
+  hide the overlap. Compare with `filepath.Rel`, never a string prefix: `/a/src-backups`
+  is not inside `/a/src`.
+- A source inside the destination is allowed.
+- Relative paths are accepted. Under cron they resolve against a different working
+  directory, so prefer absolute paths in real configs.
 
 ## Known issues and hazards
 
 Fix these deliberately, with tests. Don't "tidy" around them.
 
-1. **Only `mode` and `keep` are validated.** An empty `destination` or `source` goes
-   straight to rsync.
-2. **The legacy `:` layout can only be retired** once no destination still holds
+1. **The legacy `:` layout can only be retired** once no destination still holds
    snapshots that use it. Until then, removing it orphans them.
 
 ## Testing conventions
