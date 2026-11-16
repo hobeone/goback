@@ -120,14 +120,16 @@ These were confirmed on 2026-11-16. Fix them deliberately, with tests. Don't
 ## Testing conventions
 
 - **The rsync mock** uses the stdlib helper-process pattern. `App.execCmd` is
-  `exec.Command` in prod; tests inject `mockExecCommand`, which re-executes the test
-  binary into `TestHelperProcess` with `GO_WANT_HELPER_PROCESS=1`. Today the helper
-  **always exits 24** for `rsync`. That's why `TestRunSimpleBackup` sets
-  `IgnoreVanishedFilesError: true`. To simulate other outcomes, have the helper choose
-  its behavior from an env var or from the args.
-- **Gaps**: no test asserts the rsync argv (excludes, extra flags, dry-run injection,
-  `--link-dest`); no test covers `App.Run` mode dispatch, the rename/commit step, the
-  dry-run paths, or `getSnapshots` filtering.
+  `exec.Command` in prod. Tests inject `newExecRecorder(exitCode).command`, which
+  records each argv in `rec.calls` and re-executes the test binary into
+  `TestHelperProcess`. That process exits with `GOBACK_HELPER_EXIT` and writes
+  nothing, so the destination stays empty apart from what goback itself creates.
+  Use `rec.onlyCall(t)` to assert on the single expected invocation.
+- `TestRunRsyncArgs` pins the **exact** argv order: base flags, `--link-dest`,
+  excludes, extra flags, `--dry-run`, sources, dest. Any change to `runRsync` argument
+  building must update that table deliberately.
+- **Gaps**: the purge-error path (logged, not returned) and the `rsync.log` Close-error
+  path are untested. Inducing either needs a filesystem seam that doesn't exist.
 - **Purge tests** create directories and set their mtimes with `os.Chtimes`. Use
   **fixed dates** (the `day()` helper, which returns noon local time), never offsets from
   `time.Now()`. Offsets make week and month bucketing depend on when the test runs.
