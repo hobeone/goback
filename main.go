@@ -161,7 +161,7 @@ func (a *App) runSimpleBackup() error {
 	return nil
 }
 
-func (a *App) runRsync(destDir string, linkDest string) error {
+func (a *App) runRsync(destDir string, linkDest string) (retErr error) {
 	args := []string{"-a", "-v", "-h", "--delete", "--stats", "--inplace"}
 	if linkDest != "" {
 		args = append(args, "--link-dest="+linkDest)
@@ -197,7 +197,13 @@ func (a *App) runRsync(destDir string, linkDest string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create rsync log file: %w", err)
 			}
-			defer logFile.Close()
+			// A failed Close can mean buffered log data was lost, so report it
+			// unless rsync itself already failed.
+			defer func() {
+				if cerr := logFile.Close(); cerr != nil && retErr == nil {
+					retErr = fmt.Errorf("failed to close rsync log file: %w", cerr)
+				}
+			}()
 			logWriter = logFile
 		}
 

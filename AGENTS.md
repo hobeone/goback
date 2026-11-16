@@ -32,9 +32,8 @@ Don't run the binary against it without `-dry-run` unless you mean it.
 
 ### Current gate status (as of 2026-11-16)
 
-`go test`, `go vet` and `gofmt` are clean. `golangci-lint run` reports one known
-issue: `errcheck` on `defer logFile.Close()` in `runRsync` (`main.go`). Closing a
-file that was written to can fail, so fix it properly rather than suppressing it.
+All four gates (`go test`, `go vet`, `gofmt`, `golangci-lint`) are clean. Keep them
+that way. A new failure is yours.
 
 There is no CI workflow. `.github/` only has Dependabot (weekly `gomod`), so nothing
 enforces these gates. Run them by hand.
