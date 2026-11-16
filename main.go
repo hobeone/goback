@@ -105,10 +105,7 @@ func (c *Config) validate() error {
 // paths and symlinked sources cannot hide the overlap.
 func isWithin(path, dir string) bool {
 	rel, err := filepath.Rel(resolvePath(dir), resolvePath(path))
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // resolvePath returns p as an absolute path with symlinks evaluated. For a
@@ -166,20 +163,18 @@ func (a *App) Run() error {
 	if err := a.config.validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
-	switch a.config.Mode {
-	case "", "snapshot":
-		if err := a.runSnapshotBackup(); err != nil {
-			return fmt.Errorf("snapshot backup failed: %w", err)
-		}
-		if err := a.purgeBackups(); err != nil {
-			return fmt.Errorf("purging old backups failed: %w", err)
-		}
-	case "simple":
+	// validate has already rejected unknown modes.
+	if a.config.Mode == "simple" {
 		if err := a.runSimpleBackup(); err != nil {
 			return fmt.Errorf("simple backup failed: %w", err)
 		}
-	default:
-		return fmt.Errorf("invalid backup mode: %s", a.config.Mode)
+		return nil
+	}
+	if err := a.runSnapshotBackup(); err != nil {
+		return fmt.Errorf("snapshot backup failed: %w", err)
+	}
+	if err := a.purgeBackups(); err != nil {
+		return fmt.Errorf("purging old backups failed: %w", err)
 	}
 	return nil
 }

@@ -523,54 +523,6 @@ func TestRun_InvalidMode(t *testing.T) {
 	}
 }
 
-func TestRun_RejectsKeepThatPurgesEverything(t *testing.T) {
-	tests := []struct {
-		name string
-		keep Keep
-	}{
-		{"missing keep block", Keep{}},
-		{"all zero", Keep{Daily: 0, Weekly: 0, Monthly: 0}},
-		{"negative daily", Keep{Daily: -1, Weekly: 4}},
-		{"negative monthly", Keep{Daily: 7, Monthly: -2}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dest := t.TempDir()
-			existing := snapshotDirName("host", day(2025, time.June, 18))
-			mkdirWithMtime(t, filepath.Join(dest, existing), day(2025, time.June, 18))
-
-			rec := newExecRecorder(0)
-			app := newSnapshotApp(t, dest, rec)
-			app.config.Keep = tt.keep
-			if err := app.Run(); err == nil || !strings.Contains(err.Error(), "keep") {
-				t.Fatalf("Run should reject this keep config, got %v", err)
-			}
-			if len(rec.calls) != 0 {
-				t.Errorf("rsync ran despite invalid keep: %q", rec.calls)
-			}
-			if names := dirNames(t, dest); !slices.Equal(names, []string{existing}) {
-				t.Errorf("destination changed despite invalid keep: %q", names)
-			}
-		})
-	}
-}
-
-func TestRun_AcceptsKeepWithOneNonZeroCount(t *testing.T) {
-	for _, keep := range []Keep{{Daily: 1}, {Weekly: 1}, {Monthly: 1}} {
-		t.Run(fmt.Sprintf("%+v", keep), func(t *testing.T) {
-			rec := newExecRecorder(0)
-			app := newSnapshotApp(t, t.TempDir(), rec)
-			app.config.Keep = keep
-			if err := app.Run(); err != nil {
-				t.Fatalf("Run failed: %v", err)
-			}
-			if len(rec.calls) != 1 {
-				t.Errorf("Expected rsync to run once, got %q", rec.calls)
-			}
-		})
-	}
-}
-
 // Validation relies on any single non-zero count keeping the newest
 // snapshot; pin that for the weekly-only and monthly-only cases.
 func TestPurgeBackups_SingleSlotKeepsNewest(t *testing.T) {
@@ -754,6 +706,16 @@ func TestConfigValidate(t *testing.T) {
 			wantErrs: []string{"inside source"},
 		},
 		{
+			// "..foo" is a normal name, not a parent reference; a naive
+			// strings.HasPrefix(rel, "..") check would miss this overlap.
+			name: "destination in a ..-prefixed directory under source",
+			edit: func(t *testing.T, _ string, c *Config) {
+				c.Destination = filepath.Join(c.Source[0], "..backups")
+				mustMkdir(t, c.Destination)
+			},
+			wantErrs: []string{"inside source"},
+		},
+		{
 			name: "sibling sharing a name prefix is not inside",
 			edit: func(t *testing.T, _ string, c *Config) {
 				c.Destination = c.Source[0] + "-backups"
@@ -767,6 +729,30 @@ func TestConfigValidate(t *testing.T) {
 				mustMkdir(t, src)
 				c.Source = []string{src}
 			},
+		},
+		{
+			name:     "missing keep block",
+			edit:     func(_ *testing.T, _ string, c *Config) { c.Keep = Keep{} },
+			wantErrs: []string{"at least one of daily, weekly or monthly"},
+		},
+		{
+			name:     "negative keep count",
+			edit:     func(_ *testing.T, _ string, c *Config) { c.Keep = Keep{Daily: 7, Monthly: -2} },
+			wantErrs: []string{"must not be negative"},
+		},
+		{name: "weekly-only keep", edit: func(_ *testing.T, _ string, c *Config) { c.Keep = Keep{Weekly: 1} }},
+		{name: "monthly-only keep", edit: func(_ *testing.T, _ string, c *Config) { c.Keep = Keep{Monthly: 1} }},
+		{
+			name: "simple mode ignores keep",
+			edit: func(_ *testing.T, _ string, c *Config) {
+				c.Mode = "simple"
+				c.Keep = Keep{Daily: -1}
+			},
+		},
+		{
+			name:     "unknown mode",
+			edit:     func(_ *testing.T, _ string, c *Config) { c.Mode = "bogus" },
+			wantErrs: []string{`invalid backup mode: "bogus"`},
 		},
 		{
 			name: "every problem is reported at once",

@@ -123,7 +123,10 @@ and purge buckets use that same time. Directory mtimes are never consulted. Inva
 ### Validation (`Config.validate`)
 
 `Run` validates before anything touches disk, and `errors.Join` reports every
-problem at once. Why the less obvious rules exist:
+problem at once. That includes filesystem checks (paths exist, overlap), and it's
+deliberate, so `-dry-run` also fails when the backup drive isn't mounted. A dry run
+should tell you the real run would fail. `Run` dispatches on the assumption that
+`validate` has already rejected unknown modes. Why the less obvious rules exist:
 
 - **Snapshot destinations are never created.** When a backup drive isn't mounted, its
   mount point is empty or missing on the root filesystem, and a backup there can fill
@@ -132,8 +135,8 @@ problem at once. Why the less obvious rules exist:
   This is rejected even when an `exclude` would cover it. `isWithin` and `resolvePath`
   make both paths absolute and resolve symlinks, including the nearest existing parent
   of a destination that doesn't exist yet, so `..`, relative paths and symlinks can't
-  hide the overlap. Compare with `filepath.Rel`, never a string prefix: `/a/src-backups`
-  is not inside `/a/src`.
+  hide the overlap. Compare with `filepath.Rel` + `filepath.IsLocal`, never a string prefix:
+  `/a/src-backups` is not inside `/a/src`, but `/a/src/..backups` is.
 - A source inside the destination is allowed.
 - Relative paths are accepted. Under cron they resolve against a different working
   directory, so prefer absolute paths in real configs.
