@@ -80,7 +80,7 @@ go run main.go
 
 ### Running on a schedule
 
-[`examples/systemd/`](examples/systemd/) has an example systemd user timer and service, with one pair per backup destination. The timer uses `Persistent=true`, so a laptop or desktop that is often suspended still catches up on missed runs after it resumes. The service holds off suspend while a backup is running, and checks that the destination is reachable before it starts.
+[`examples/systemd/`](examples/systemd/) has an example systemd user timer and service, with one pair per backup destination. The timer uses `Persistent=true`, so a laptop or desktop that is often suspended still catches up on missed runs after it resumes. The service holds off suspend while a backup is running, waits for the destination to be reachable before it starts, and mails you a status report through `OnFailure=` if a run fails, the way cron mails job output.
 
 ## How It Works
 

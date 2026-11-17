@@ -3,9 +3,11 @@
 # Each backup destination gets its own service+timer pair, named after
 # that destination (goback-nas, goback-usb, ...). Copy both files, rename
 # them, and change the config path and destination check below.
+# goback-notify@.service is shared by all of them.
 #
 # Install:
-#   cp goback-nas.service goback-nas.timer ~/.config/systemd/user/
+#   cp goback-nas.service goback-nas.timer goback-notify@.service \
+#      ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now goback-nas.timer
 # Logs:     journalctl --user -u goback-nas
@@ -13,18 +15,20 @@
 
 [Unit]
 Description=goback backup to NAS (/mnt/nas/backup)
+# Mail a status report to you when a run fails, like cron's MAILTO.
+OnFailure=goback-notify@%n.service
 
 [Service]
 Type=oneshot
-# Fail fast if this destination is unavailable. For an autofs/NFS mount
-# this also triggers the mount. Matters most in simple mode, which creates
-# a missing destination and would otherwise back up to the local disk.
-ExecStartPre=/usr/bin/test -d /mnt/nas/backup
+# Wait up to 10 minutes for the destination: right after resume, the
+# network and an autofs/NFS mount may not be up yet. test -d also
+# triggers the automount. Failing here matters most in simple mode, which
+# creates a missing destination and would back up to the local disk.
+ExecStartPre=/bin/sh -c 'for i in $$(seq 20); do test -d /mnt/nas/backup && exit 0; sleep 30; done; exit 1'
 # Hold off suspend while rsync runs. The lock is released when goback exits.
 ExecStart=/usr/bin/systemd-inhibit --what=sleep --why="goback backup to NAS" \
     %h/bin/goback -config %h/.config/goback/nas.yaml
-# Covers a NAS or network that isn't up yet right after resume.
-Restart=on-failure
-RestartSec=15min
+# No Restart=: OnFailure= fires on every failed attempt, so retries would
+# send a mail each time. A failed run is retried at the next timer tick.
 Nice=10
 IOSchedulingClass=idle

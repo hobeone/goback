@@ -1,0 +1,15 @@
+# Failure reporter shared by every goback-*.service. Each one sets:
+#   OnFailure=goback-notify@%n.service
+# and this mails the failed unit's status and last 40 log lines to the
+# local user (%u), the same way cron mails job output.
+#
+# Requires a working local MTA (postfix, exim, or similar) and a `mail`
+# command (mailutils or bsd-mailx). Local mail may be delivered to
+# ~/Maildir instead of /var/mail; check `postconf home_mailbox`.
+
+[Unit]
+Description=Mail goback failure report for %i
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'systemctl --user status --no-pager --lines=40 "%i" | mail -s "goback FAILED: %i on %H" %u'
