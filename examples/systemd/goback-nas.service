@@ -1,0 +1,30 @@
+# Example systemd user service for ONE goback config / destination.
+#
+# Each backup destination gets its own service+timer pair, named after
+# that destination (goback-nas, goback-usb, ...). Copy both files, rename
+# them, and change the config path and destination check below.
+#
+# Install:
+#   cp goback-nas.service goback-nas.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now goback-nas.timer
+# Logs:     journalctl --user -u goback-nas
+# Run now:  systemctl --user start goback-nas.service
+
+[Unit]
+Description=goback backup to NAS (/mnt/nas/backup)
+
+[Service]
+Type=oneshot
+# Fail fast if this destination is unavailable. For an autofs/NFS mount
+# this also triggers the mount. Matters most in simple mode, which creates
+# a missing destination and would otherwise back up to the local disk.
+ExecStartPre=/usr/bin/test -d /mnt/nas/backup
+# Hold off suspend while rsync runs. The lock is released when goback exits.
+ExecStart=/usr/bin/systemd-inhibit --what=sleep --why="goback backup to NAS" \
+    %h/bin/goback -config %h/.config/goback/nas.yaml
+# Covers a NAS or network that isn't up yet right after resume.
+Restart=on-failure
+RestartSec=15min
+Nice=10
+IOSchedulingClass=idle

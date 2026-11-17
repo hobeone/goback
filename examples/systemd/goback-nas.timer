@@ -1,0 +1,21 @@
+# Daily trigger for goback-nas.service. See that file for install steps.
+#
+# Persistent=true is what makes this work on a machine that is often
+# suspended: a run missed while asleep or powered off fires once soon after
+# resume or boot. Cron would skip it.
+#
+# User timers run only while you are logged in. To run them while logged
+# out, enable lingering: loginctl enable-linger
+
+[Unit]
+Description=Daily goback backup to NAS (/mnt/nas/backup)
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+# Gives the network time to come up after resume, and spreads out several
+# goback timers so they don't all start at once.
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

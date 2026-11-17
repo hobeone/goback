@@ -78,6 +78,10 @@ go run main.go
     go run main.go -dry-run
     ```
 
+### Running on a schedule
+
+[`examples/systemd/`](examples/systemd/) has an example systemd user timer and service, with one pair per backup destination. The timer uses `Persistent=true`, so a laptop or desktop that is often suspended still catches up on missed runs after it resumes. The service holds off suspend while a backup is running, and checks that the destination is reachable before it starts.
+
 ## How It Works
 
 ### Backup Process
